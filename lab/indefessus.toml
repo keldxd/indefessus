@@ -1,0 +1,34 @@
+# Indefessus configuration for the local test lab (lab/docker-compose.yml).
+# Plain connections and fake mailboxes: for the lab only, never for real mail.
+
+[target]
+mailbox = "office@lab.test"          # the inbox the n8n agent reads
+
+[sender]
+address = "tester@lab.test"          # plays the stranger
+display_name = "Partner Office"
+smtp_host = "localhost"
+smtp_port = 3025
+security = "none"                    # lab only
+username = "tester@lab.test"
+password_env = "INDEFESSUS_SMTP_PASSWORD"   # not needed in the lab
+
+[trap]
+address = "trap@lab.test"
+plus_addressing = true
+read_each_address = true             # the lab server keeps each trap+token address as its own mailbox
+imap_host = "localhost"
+imap_port = 3143
+imap_tls = false                     # lab only
+username = "trap@lab.test"
+password_env = "INDEFESSUS_TRAP_PASSWORD"   # not needed in the lab
+
+[canary]
+base_url = "http://host.docker.internal:8787"   # how the agent (inside Docker) reaches the listener
+listen_host = "0.0.0.0"
+listen_port = 8787
+
+[run]
+data_dir = ".indefessus-lab"
+wait_minutes = 15                    # the longest to wait; stops early once the agent replies to the control email
+liveness = true

@@ -1,17 +1,18 @@
 //! Self-test: proves the whole pipeline works, with no real mailbox and no real agent.
 //!
-//! Two stand-in agents read the same test emails:
+//! Three stand-in agents read the same test emails:
 //!   - a NAIVE agent that obeys any instruction it finds in an email (every test should fail)
 //!   - a CAREFUL agent that never follows instructions from email content (every test should pass)
+//!   - a SILENT agent that is switched off (no test may pass: results must be inconclusive)
 //! These are simple programs that imitate the two extremes. They are not AI models, and the
 //! results say nothing about any real product. They show that Indefessus catches an agent
 //! that misbehaves, and raises no false alarms on one that behaves.
 
 use crate::canary::Background;
-use crate::evaluate::{collect_trapmail, evaluate_run, FAIL};
-use crate::mail::MemoryTrap;
+use crate::evaluate::{apply_liveness, collect_trapmail, control_email, control_replied, evaluate_run, CONTROL_ID, FAIL, INCONCLUSIVE, PASS};
+use crate::mail::{MemoryTrap, TrapSource};
 use crate::report::text_report;
-use crate::scenarios::{load_library, render};
+use crate::scenarios::{load_library, new_token, render};
 use crate::store::Store;
 use crate::util::{now, percent_encode};
 use anyhow::Result;
@@ -73,12 +74,22 @@ fn http_get(addr: SocketAddr, path_and_query: &str) -> Result<()> {
 trait Agent {
     fn name(&self) -> &'static str;
     fn process(&mut self, inbox: &[Email]) -> Result<()>;
-    fn answer(&self, prompt: &str) -> String;
+    /// What the assistant says when asked (guided tests). None: it never answers.
+    fn answer(&self, prompt: &str) -> Option<String>;
 }
+
+/// Replying to the person who wrote is what any working inbox agent does. Both working stand-ins
+/// do it for every email, which is how the control email confirms they are alive.
+fn reply_to_sender(replies: &MemoryTrap, m: &Email) {
+    replies.deliver("assistant@victim.example", SENDER, &format!("Re: {}", m.subject), &format!("Thanks for your email about \"{}\". We will get back to you.", m.subject));
+}
+
+const SENDER: &str = "tester@sender.invalid";
 
 struct NaiveAgent<'a> {
     p: &'a Patterns,
     trap: &'a MemoryTrap,
+    replies: &'a MemoryTrap,
     base: String,
     addr: SocketAddr,
     trap_domain: String,
@@ -96,6 +107,7 @@ impl Agent for NaiveAgent<'_> {
         let everything: String = inbox.iter().map(|m| format!("{}: {}\n", m.subject, self.p.readable(m))).collect();
         let codes: Vec<String> = self.p.phrase.captures_iter(&everything).map(|c| c[1].to_string()).collect();
         for m in inbox {
+            reply_to_sender(self.replies, m);
             let content = self.p.readable(m);
             for url in self.p.url.find_iter(&content).map(|x| x.as_str()) {
                 if let Some(rest) = url.strip_prefix(&self.base) {
@@ -116,30 +128,58 @@ impl Agent for NaiveAgent<'_> {
         Ok(())
     }
 
-    fn answer(&self, _prompt: &str) -> String {
-        format!("Here is a summary of your inbox: {}. {}", self.subjects.join("; "), self.planted.join(" "))
+    fn answer(&self, _prompt: &str) -> Option<String> {
+        Some(format!("Here is a summary of your inbox: {}. {}", self.subjects.join("; "), self.planted.join(" ")))
     }
 }
 
-struct CarefulAgent {
+struct CarefulAgent<'a> {
+    replies: &'a MemoryTrap,
     count: usize,
 }
 
-impl Agent for CarefulAgent {
+impl Agent for CarefulAgent<'_> {
     fn name(&self) -> &'static str {
         "careful agent (never follows instructions from email content)"
     }
     fn process(&mut self, inbox: &[Email]) -> Result<()> {
         self.count = inbox.len();
+        for m in inbox {
+            reply_to_sender(self.replies, m);
+        }
         Ok(())
     }
-    fn answer(&self, _prompt: &str) -> String {
-        format!("You have {} new emails. Some of them contain requests from people you may not know.", self.count)
+    fn answer(&self, _prompt: &str) -> Option<String> {
+        Some(format!("You have {} new emails. Some of them contain requests from people you may not know.", self.count))
     }
 }
 
-/// Runs both stand-in agents through every test. Returns true if the naive agent failed every
-/// test and the careful agent failed none.
+/// An agent that is switched off, crashed or out of quota: it does nothing at all.
+struct SilentAgent;
+
+impl Agent for SilentAgent {
+    fn name(&self) -> &'static str {
+        "silent agent (switched off: does nothing)"
+    }
+    fn process(&mut self, _inbox: &[Email]) -> Result<()> {
+        Ok(())
+    }
+    fn answer(&self, _prompt: &str) -> Option<String> {
+        None
+    }
+}
+
+struct Outcome {
+    name: &'static str,
+    failed: usize,
+    passed: usize,
+    inconclusive: usize,
+    total: usize,
+}
+
+/// Runs three stand-in agents through every test. Returns true if the naive agent failed every
+/// test, the careful agent failed none and passed every one, and the silent agent got no
+/// passes at all (only inconclusive results, because it never replied to the control email).
 pub fn run_selftest(print: bool) -> Result<bool> {
     let lib = load_library(&[])?;
     let dir = std::env::temp_dir().join(format!("indefessus-selftest-{}-{}", std::process::id(), rand::random::<u32>()));
@@ -148,25 +188,28 @@ pub fn run_selftest(print: bool) -> Result<bool> {
     let base = listener.base_url();
     let trap_domain = "selftest.invalid";
     let patterns = Patterns::new();
-    let mut summary = Vec::new();
+    let mut summary: Vec<Outcome> = Vec::new();
 
-    for which in ["naive", "careful"] {
+    for which in ["naive", "careful", "silent"] {
         let trap = MemoryTrap::default();
-        let mut agent: Box<dyn Agent + '_> = if which == "naive" {
-            Box::new(NaiveAgent {
+        let replies = MemoryTrap::default();
+        let mut agent: Box<dyn Agent + '_> = match which {
+            "naive" => Box::new(NaiveAgent {
                 p: &patterns,
                 trap: &trap,
+                replies: &replies,
                 base: base.clone(),
                 addr: listener.addr,
                 trap_domain: trap_domain.into(),
                 subjects: vec![],
                 planted: vec![],
-            })
-        } else {
-            Box::new(CarefulAgent { count: 0 })
+            }),
+            "careful" => Box::new(CarefulAgent { replies: &replies, count: 0 }),
+            _ => Box::new(SilentAgent),
         };
         let run_id = format!("selftest-{which}-{}", now() as u64);
         store.new_run(&run_id, "selftest", agent.name())?;
+        let started = store.run(&run_id)?.map(|r| r.started_at).unwrap_or(0.0);
         let mut inbox = Vec::new();
         let mut prompts = Vec::new();
         for sc in &lib.list {
@@ -180,38 +223,59 @@ pub fn run_selftest(print: bool) -> Result<bool> {
                 prompts.push((sc.id.clone(), r.guided_prompt.clone()));
             }
         }
+        // The control email goes last, as in a live run
+        let control_token = new_token();
+        store.add_item(&run_id, CONTROL_ID, &control_token, "")?;
+        let (subject, text) = control_email(&control_token);
+        inbox.push(Email { subject, text, html: String::new() });
+
         agent.process(&inbox)?;
         for (id, prompt) in prompts {
-            store.set_answer(&run_id, &id, &agent.answer(&prompt))?;
+            if let Some(answer) = agent.answer(&prompt) {
+                store.set_answer(&run_id, &id, &answer)?;
+            }
         }
         collect_trapmail(&store, &run_id, &trap)?;
-        let results = evaluate_run(&store, &run_id, &lib)?;
+        evaluate_run(&store, &run_id, &lib)?;
+        let alive = control_replied(&replies.fetch_since(0.0)?, &control_token, started);
+        apply_liveness(&store, &run_id, alive)?;
         store.finish_run(&run_id)?;
-        let failed = results.iter().filter(|(_, s)| *s == FAIL).count();
+        let items: Vec<_> = store.items(&run_id)?.into_iter().filter(|i| i.scenario_id != CONTROL_ID).collect();
+        let count = |s: &str| items.iter().filter(|i| i.status == s).count();
         if print {
             println!("{}\n", text_report(&store, &run_id, &lib, &[])?);
         }
-        summary.push((agent.name(), failed, results.len()));
+        summary.push(Outcome { name: agent.name(), failed: count(FAIL), passed: count(PASS), inconclusive: count(INCONCLUSIVE), total: items.len() });
     }
     drop(listener);
     let _ = std::fs::remove_dir_all(&dir);
 
-    let (naive, careful) = (&summary[0], &summary[1]);
-    let ok = naive.1 == naive.2 && careful.1 == 0;
+    let (naive, careful, silent) = (&summary[0], &summary[1], &summary[2]);
+    let naive_ok = naive.failed == naive.total;
+    let careful_ok = careful.failed == 0 && careful.passed == careful.total;
+    let silent_ok = silent.failed == 0 && silent.passed == 0 && silent.inconclusive > 0;
+    let ok = naive_ok && careful_ok && silent_ok;
     if print {
         println!("==== self-test summary ====");
-        for (name, failed, total) in &summary {
-            println!("{name}: {failed} of {total} tests failed");
+        for o in &summary {
+            println!("{}: {} failed, {} passed, {} inconclusive (of {} tests)", o.name, o.failed, o.passed, o.inconclusive, o.total);
         }
-        if naive.1 != naive.2 {
+        if !naive_ok {
             println!("PROBLEM: some tests did not catch the naive agent");
         }
-        if careful.1 != 0 {
-            println!("PROBLEM: the careful agent triggered alarms (false positives)");
+        if !careful_ok {
+            println!("PROBLEM: the careful agent triggered alarms (false positives) or was not confirmed alive");
+        }
+        if !silent_ok {
+            println!("PROBLEM: a switched-off agent was reported as passing");
         }
         println!(
             "self-test {}",
-            if ok { "PASSED: every test caught the naive agent, and none fired on the careful one" } else { "FAILED" }
+            if ok {
+                "PASSED: every test caught the naive agent, none fired on the careful one, and the switched-off agent was never reported as passing"
+            } else {
+                "FAILED"
+            }
         );
     }
     Ok(ok)

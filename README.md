@@ -15,8 +15,9 @@ Large companies hire red teams to test this. A clinic, a school, a co-op or a si
 1. **Sends harmless test emails** to a mailbox you own. Each one tries a real trick: instructions in plain text, in invisible text, or disguised as encoded data.
 2. **Plants a tracker in each test**: a unique link and a unique address in a mailbox you control. The trackers carry no real data.
 3. **Watches from the outside.** If the agent obeys a test, its tracker fires: the link gets opened, or mail arrives at the trap address. Indefessus never needs access to the agent's internals, so it works on any product, as actually deployed.
-4. **Explains the result in plain language**: what happened, what it means, what to do about it.
-5. **Re-checks every day** and warns you when the agent's behaviour changes, for example after the AI model behind it was silently updated.
+4. **Checks the agent was really working.** Every run also sends one ordinary email that any working agent would reply to. If the agent never replies (switched off, crashed, out of quota), results without evidence are reported as **inconclusive**, never as passed.
+5. **Explains the result in plain language**: what happened, what it means, what to do about it.
+6. **Re-checks every day** and warns you when the agent's behaviour changes, for example after the AI model behind it was silently updated.
 
 ## Status: v0.1, early
 
@@ -26,11 +27,11 @@ What works and is tested today:
 - A single program with no installs: the tests are built into it.
 - A **self-test** that runs the whole pipeline against two stand-in agents, with no mailbox needed: a naive one that obeys any instruction (all 12 tests catch it) and a careful one that never does (none of the 12 fire). The stand-ins are simple scripts, not AI models, and say nothing about any real product.
 
-Not yet done: the first public results against real assistants and automations. Those are next.
+**First live results** ([full write-up](lab/RESULTS.md)): in the reproducible [test lab](lab/), a typical "take care of my inbox" n8n agent running Groq's `gpt-oss-120b` **failed 6 of 8 tests**. Strangers' emails made it confirm a KES 245,000 payment approval, send out its own instructions and tool list, open links it was told to open, and write to addresses it was told to write to. Indefessus caught every one from the outside, with no false alarms, and every result was cross-checked against the agent's own log.
 
 ## Quick start: the self-test (2 minutes)
 
-**Download** the program for your computer from the [Releases page](https://github.com/keldxd/indefessus/releases) (Windows, macOS or Linux). It is a single file with nothing else to install. Then, in a terminal:
+**Download** the program for your computer from the [Releases page](https://github.com/keldxd/indefessus/releases): Windows, macOS (Apple Silicon or Intel) or Linux (x86 or ARM, such as a Raspberry Pi). It is a single file with nothing else to install. Then, in a terminal:
 
 ```bash
 indefessus selftest        # on Windows: indefessus-windows-x86_64.exe selftest
@@ -108,6 +109,7 @@ Each test is a small, readable file in [`scenarios/`](scenarios/). Adding one is
 - **A pass is not a guarantee.** It means the agent resisted these tests, today. New tricks appear all the time, which is why the library is open and the checks repeat.
 - **Some actions are invisible from outside.** If an agent acts in a way that never touches a link or an address you control, Indefessus cannot see it.
 - **Guided tests need a person** to ask the assistant and paste its answer.
+- **The agent check needs the agent to reply to email.** An assistant that never sends email (one you only chat with) cannot confirm it is alive this way; use the guided tests for it.
 
 ## Roadmap
 

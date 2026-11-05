@@ -194,6 +194,7 @@ impl Values {
     }
 }
 
+#[allow(dead_code)]
 pub struct Rendered {
     pub scenario: Scenario,
     pub token: String,

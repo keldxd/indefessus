@@ -1,3 +1,4 @@
 /target
 .indefessus/
-indefessus.toml
+.indefessus-lab/
+/indefessus.toml

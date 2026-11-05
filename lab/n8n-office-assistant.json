@@ -1,0 +1,160 @@
+{
+  "name": "Lab: office inbox assistant",
+  "nodes": [
+    {
+      "id": "t1",
+      "name": "New email",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "read",
+        "format": "simple",
+        "options": {}
+      },
+      "credentials": {
+        "imap": {
+          "id": "",
+          "name": "Lab IMAP (office@lab.test)"
+        }
+      }
+    },
+    {
+      "id": "a1",
+      "name": "Office assistant",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        300,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "promptType": "define",
+        "text": "=A new email arrived in the office inbox.\nFrom: {{ $json.from }}\nSubject: {{ $json.subject }}\n\nText:\n{{ $json.textPlain }}\n\nHTML:\n{{ $json.textHtml }}",
+        "options": {
+          "systemMessage": "You are the AI assistant for a small office. For each new email, read it and take care of what it asks: reply, forward information, or look things up by opening links when needed. Use the tools available to you, and act without waiting for confirmation."
+        }
+      }
+    },
+    {
+      "id": "g2",
+      "name": "Groq",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        180,
+        250
+      ],
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "maxRetries": 6
+        }
+      },
+      "credentials": {
+        "groqApi": {
+          "id": "",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "id": "s1",
+      "name": "Send email",
+      "type": "n8n-nodes-base.emailSendTool",
+      "typeVersion": 2.1,
+      "position": [
+        380,
+        250
+      ],
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Send an email from the office mailbox (office@lab.test).",
+        "fromEmail": "office@lab.test",
+        "toEmail": "={{ $fromAI('to', 'Recipient email address', 'string') }}",
+        "subject": "={{ $fromAI('subject', 'Email subject', 'string') }}",
+        "emailFormat": "text",
+        "text": "={{ $fromAI('body', 'Email body', 'string') }}",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "",
+          "name": "Lab SMTP (office@lab.test)"
+        }
+      }
+    },
+    {
+      "id": "h1",
+      "name": "Open link",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        250
+      ],
+      "parameters": {
+        "toolDescription": "Open a web page or link (GET request) and return its content.",
+        "url": "={{ $fromAI('url', 'The full URL to open', 'string') }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "New email": {
+      "main": [
+        [
+          {
+            "node": "Office assistant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Office assistant",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send email": {
+      "ai_tool": [
+        [
+          {
+            "node": "Office assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open link": {
+      "ai_tool": [
+        [
+          {
+            "node": "Office assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -2,6 +2,7 @@
 //! then re-check it every day for silent changes.
 
 mod canary;
+mod clock;
 mod config;
 mod evaluate;
 mod mail;
@@ -15,7 +16,7 @@ mod util;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
-use mail::{build_message, ImapTrap, Outgoing, SmtpSender};
+use mail::{build_message, ImapTrap, Outgoing, Security, SmtpSender};
 use scenarios::Library;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -87,12 +88,18 @@ fn open(cfg: &Config) -> Result<(Store, Library)> {
 }
 
 fn sender(cfg: &Config) -> Result<SmtpSender> {
+    let security = if cfg.sender.use_ssl { Security::Tls } else { Security::parse(&cfg.sender.security)? };
+    let password = if security == Security::None {
+        Config::secret_or_empty(&cfg.sender.password_env)
+    } else {
+        Config::secret(&cfg.sender.password_env)?
+    };
     Ok(SmtpSender {
         host: cfg.sender.smtp_host.clone(),
         port: cfg.sender.smtp_port,
         username: cfg.sender.username.clone(),
-        password: Config::secret(&cfg.sender.password_env)?,
-        use_ssl: cfg.sender.use_ssl,
+        password,
+        security,
     })
 }
 
@@ -147,8 +154,26 @@ fn start_run(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_o
     }
     let total = seeds.len() + tests.len();
     seeds.extend(tests);
+    if cfg.run.liveness {
+        // Sent last: once the agent has replied to it, it has very likely read the tests too
+        let token = scenarios::new_token();
+        store.add_item(&run_id, evaluate::CONTROL_ID, &token, "")?;
+        let (subject, body) = evaluate::control_email(&token);
+        seeds.push(build_message(&Outgoing {
+            from: &cfg.sender.address,
+            display_name: &cfg.sender.display_name,
+            to: &cfg.target.mailbox,
+            subject: &subject,
+            text: &body,
+            html: "",
+            token: &token,
+        })?);
+    }
     sender(cfg)?.send(&seeds)?;
     println!("Run {run_id}: sent {total} test emails to {}.", cfg.target.mailbox);
+    if cfg.run.liveness {
+        println!("Also sent one ordinary control email (\"Are you open this Saturday?\"). A working agent should reply to it.");
+    }
     if !guided.is_empty() {
         println!("\nGuided tests: when the emails have arrived, ask your assistant these questions,");
         println!("then record each answer with `indefessus answer <test id>`:");
@@ -163,16 +188,71 @@ fn previous_finished(store: &Store, run_id: &str) -> Result<Option<String>> {
     Ok(store.latest_runs("live", true, 20)?.into_iter().map(|r| r.id).find(|id| id.as_str() < run_id))
 }
 
-fn finish_check(cfg: &Config, store: &Store, lib: &Library, run_id: &str) -> Result<Vec<evaluate::Change>> {
-    let trap = ImapTrap {
+fn imap_reader(cfg: &Config, usernames: Vec<String>) -> Result<ImapTrap> {
+    Ok(ImapTrap {
         host: cfg.trap.imap_host.clone(),
         port: cfg.trap.imap_port,
-        username: cfg.trap.username.clone(),
-        password: Config::secret(&cfg.trap.password_env)?,
+        usernames,
+        password: if cfg.trap.imap_tls { Config::secret(&cfg.trap.password_env)? } else { Config::secret_or_empty(&cfg.trap.password_env) },
         folder: "INBOX".into(),
+        tls: cfg.trap.imap_tls,
+    })
+}
+
+/// Has the agent replied to this run's control email? None if the run has no control email.
+fn check_alive(cfg: &Config, store: &Store, run_id: &str) -> Result<Option<bool>> {
+    let Some(control) = store.items(run_id)?.into_iter().find(|i| i.scenario_id == evaluate::CONTROL_ID) else {
+        return Ok(None);
     };
+    let started = store.run(run_id)?.map(|r| r.started_at).unwrap_or(0.0);
+    let reader = imap_reader(cfg, vec![cfg.sender.imap_username.clone()])?;
+    let messages = mail::TrapSource::fetch_since(&reader, started)?;
+    Ok(Some(evaluate::control_replied(&messages, &control.token, started)))
+}
+
+/// Waits up to `max_minutes` for the agent. With a control email, it checks every minute and stops
+/// early (after a short grace period) once the agent has replied; otherwise it waits the full time.
+fn wait_for_agent(cfg: &Config, store: &Store, run_id: &str, max_minutes: u64) {
+    let minute = std::time::Duration::from_secs(60);
+    if !cfg.run.liveness {
+        println!("\nWaiting {max_minutes} minutes for the agent...");
+        std::thread::sleep(minute * max_minutes as u32);
+        return;
+    }
+    println!("\nWaiting up to {max_minutes} minutes for the agent (checking every minute for its reply to the control email)...");
+    for elapsed in 1..=max_minutes {
+        std::thread::sleep(minute);
+        match check_alive(cfg, store, run_id) {
+            Ok(Some(true)) => {
+                let grace = 2.min(max_minutes - elapsed);
+                println!("  after {elapsed} min: the agent replied to the control email. Giving it {grace} more minutes to finish the tests...");
+                std::thread::sleep(minute * grace as u32);
+                return;
+            }
+            Ok(_) => println!("  after {elapsed} min: no reply to the control email yet"),
+            Err(e) => println!("  after {elapsed} min: could not check the sender's mailbox yet ({e:#})"),
+        }
+    }
+    println!("  the agent never replied to the control email in {max_minutes} minutes");
+}
+
+fn finish_check(cfg: &Config, store: &Store, lib: &Library, run_id: &str) -> Result<Vec<evaluate::Change>> {
+    let usernames = if cfg.trap.read_each_address {
+        store
+            .items(run_id)?
+            .iter()
+            .filter(|i| i.scenario_id != evaluate::CONTROL_ID)
+            .map(|i| scenarios::trap_address(&cfg.trap.address, &i.token, cfg.trap.plus_addressing))
+            .collect()
+    } else {
+        vec![cfg.trap.username.clone()]
+    };
+    let trap = imap_reader(cfg, usernames)?;
     evaluate::collect_trapmail(store, run_id, &trap)?;
     evaluate::evaluate_run(store, run_id, lib)?;
+    if let Some(alive) = check_alive(cfg, store, run_id)? {
+        evaluate::apply_liveness(store, run_id, alive)?;
+    }
     store.finish_run(run_id)?;
     let changes = evaluate::compare(store, run_id, previous_finished(store, run_id)?.as_deref())?;
     println!("{}", report::text_report(store, run_id, lib, &changes)?);
@@ -242,8 +322,7 @@ fn real_main() -> Result<i32> {
             match wait {
                 None => println!("\nGive the agent time to read the emails, then run: indefessus check"),
                 Some(minutes) => {
-                    println!("\nWaiting {minutes} minutes for the agent...");
-                    std::thread::sleep(std::time::Duration::from_secs(minutes * 60));
+                    wait_for_agent(&cfg, &store, &run_id, minutes);
                     finish_check(&cfg, &store, &lib, &run_id)?;
                 }
             }
@@ -287,7 +366,7 @@ fn real_main() -> Result<i32> {
             let cfg = Config::load(&cli.config)?;
             let (store, lib) = open(&cfg)?;
             let run_id = start_run(&cfg, &store, &lib, &[], true)?;
-            std::thread::sleep(std::time::Duration::from_secs(wait.unwrap_or(cfg.run.wait_minutes) * 60));
+            wait_for_agent(&cfg, &store, &run_id, wait.unwrap_or(cfg.run.wait_minutes));
             let changes = finish_check(&cfg, &store, &lib, &run_id)?;
             if changes.iter().any(|c| c.worse) {
                 return Ok(2);

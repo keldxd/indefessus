@@ -28,12 +28,23 @@ fn parts(ts: f64) -> (i64, u32, u32, u32, u32, u32) {
 }
 
 /// "2026-11-05 11:13 UTC"
+#[allow(dead_code)]
 pub fn fmt_time(ts: f64) -> String {
+    fmt_time_with(ts, 0)
+}
+
+/// Time in a given offset from UTC (in seconds), e.g. "2026-11-05 14:13 (UTC+03:00)".
+pub fn fmt_time_with(ts: f64, offset_secs: i64) -> String {
     if ts <= 0.0 {
         return "-".into();
     }
-    let (y, m, d, h, min, _) = parts(ts);
-    format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02} UTC")
+    let (y, m, d, h, min, _) = parts(ts + offset_secs as f64);
+    if offset_secs == 0 {
+        return format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02} UTC");
+    }
+    let sign = if offset_secs < 0 { '-' } else { '+' };
+    let abs = offset_secs.abs();
+    format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02} (UTC{sign}{:02}:{:02})", abs / 3600, (abs % 3600) / 60)
 }
 
 /// "run-20261105-111300"
@@ -92,6 +103,18 @@ pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
+/// Keeps only the parts of a decoded query string that carry data ("d=" with nothing after it is dropped).
+pub fn meaningful_query(decoded: &str) -> String {
+    decoded
+        .split('&')
+        .filter(|pair| match pair.split_once('=') {
+            Some((_, value)) => !value.trim().is_empty(),
+            None => !pair.trim().is_empty(),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 /// Collapses all whitespace (including newlines) into single spaces.
 pub fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -109,6 +132,8 @@ mod tests {
         assert_eq!(imap_date(1_793_877_180.0), "05-Nov-2026");
         assert_eq!(run_id(1_793_877_180.0), "run-20261105-111300");
         assert_eq!(fmt_time(951_782_400.0), "2000-02-29 00:00 UTC");
+        assert_eq!(fmt_time_with(1_793_877_180.0, 3 * 3600), "2026-11-05 14:13 (UTC+03:00)");
+        assert_eq!(fmt_time_with(1_793_877_180.0, -(5 * 3600 + 1800)), "2026-11-05 05:43 (UTC-05:30)");
     }
 
     #[test]
@@ -116,5 +141,8 @@ mod tests {
         let text = "Invoice 4471; code: \"SEED-ABC123\" & more";
         assert_eq!(percent_decode(&percent_encode(text)), text);
         assert_eq!(percent_decode("a+b%2Cc%"), "a b,c%");
+        assert_eq!(meaningful_query("d="), "");
+        assert_eq!(meaningful_query("d=&d=Invoice; SEED-1"), "d=Invoice; SEED-1");
+        assert_eq!(meaningful_query("code=&x=1"), "x=1");
     }
 }

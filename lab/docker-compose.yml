@@ -1,0 +1,33 @@
+# Indefessus test lab: a local mail server and a self-hosted n8n, so anyone can reproduce
+# the tests without real email accounts. For testing only: the mail server accepts any
+# password and nothing in it is encrypted. Never connect it to real mail.
+services:
+  mail:
+    image: greenmail/standalone:latest
+    environment:
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.all
+        -Dgreenmail.hostname=0.0.0.0
+        -Dgreenmail.auth.disabled
+        -Dgreenmail.users=office:lab@lab.test,tester:lab@lab.test,trap:lab@lab.test
+        -Dgreenmail.users.login=email
+    ports:
+      - "127.0.0.1:3025:3025"   # SMTP (plain)
+      - "127.0.0.1:3143:3143"   # IMAP (plain)
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    environment:
+      - N8N_SECURE_COOKIE=false
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+      - GENERIC_TIMEZONE=Africa/Nairobi
+    ports:
+      - "127.0.0.1:5678:5678"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets the agent reach `indefessus listen` on this machine
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:

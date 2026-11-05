@@ -16,8 +16,8 @@ mailbox = "office@your-org.example"
 address = "tester@your-other-domain.example"
 display_name = "Partner Office"
 smtp_host = "smtp.example.com"
-smtp_port = 587          # 587 with STARTTLS, or 465 with use_ssl = true
-use_ssl = false
+smtp_port = 587          # 587 with security = "starttls", or 465 with security = "tls"
+security = "starttls"
 username = "tester@your-other-domain.example"
 password_env = "INDEFESSUS_SMTP_PASSWORD"
 
@@ -38,7 +38,8 @@ listen_port = 8787
 
 [run]
 data_dir = ".indefessus"
-wait_minutes = 30        # how long to give the agent before checking
+wait_minutes = 30        # the longest to wait for the agent (checking stops early once it has replied to the control email)
+liveness = true          # send an ordinary control email; if the agent never replies, results are inconclusive, not passed
 extra_scenarios = []     # folders with your own test files
 "#;
 
@@ -88,8 +89,16 @@ pub struct Sender {
     pub smtp_port: u16,
     #[serde(default)]
     pub use_ssl: bool,
+    /// starttls (default), tls, or none (local test lab only)
+    #[serde(default)]
+    pub security: String,
     #[serde(default)]
     pub username: String,
+    /// Login for reading the sender's own mailbox (replies to the control email arrive there).
+    /// It is read with the [trap] IMAP settings, so it works when the sender and trap are the
+    /// same account, or in the lab. Defaults to `username`.
+    #[serde(default)]
+    pub imap_username: String,
     #[serde(default = "d_smtp_env")]
     pub password_env: String,
 }
@@ -102,6 +111,12 @@ pub struct Trap {
     pub imap_host: String,
     #[serde(default = "d_993")]
     pub imap_port: u16,
+    /// false only for a local test lab
+    #[serde(default = "d_true")]
+    pub imap_tls: bool,
+    /// true only for a local lab server that keeps each trap+token address as its own mailbox
+    #[serde(default)]
+    pub read_each_address: bool,
     #[serde(default)]
     pub username: String,
     #[serde(default = "d_trap_env")]
@@ -125,11 +140,15 @@ pub struct Run {
     pub wait_minutes: u64,
     #[serde(default)]
     pub extra_scenarios: Vec<String>,
+    /// Send an ordinary control email and check the agent replies to it, so a broken or
+    /// switched-off agent is reported as inconclusive, never as passed.
+    #[serde(default = "d_true")]
+    pub liveness: bool,
 }
 
 impl Default for Run {
     fn default() -> Self {
-        Run { data_dir: d_data(), wait_minutes: d_30(), extra_scenarios: vec![] }
+        Run { data_dir: d_data(), wait_minutes: d_30(), extra_scenarios: vec![], liveness: true }
     }
 }
 
@@ -153,10 +172,18 @@ impl Config {
         if cfg.sender.username.is_empty() {
             cfg.sender.username = cfg.sender.address.clone();
         }
+        if cfg.sender.imap_username.is_empty() {
+            cfg.sender.imap_username = cfg.sender.username.clone();
+        }
         if cfg.trap.username.is_empty() {
             cfg.trap.username = cfg.trap.address.clone();
         }
         Ok(cfg)
+    }
+
+    /// Like `secret`, but an unset variable means "no password" (used for a local test lab).
+    pub fn secret_or_empty(env_name: &str) -> String {
+        std::env::var(env_name).unwrap_or_default()
     }
 
     pub fn secret(env_name: &str) -> Result<String> {
@@ -174,5 +201,7 @@ mod tests {
         let cfg: super::Config = toml::from_str(super::EXAMPLE).unwrap();
         assert_eq!(cfg.sender.smtp_port, 587);
         assert_eq!(cfg.run.wait_minutes, 30);
+        assert!(cfg.run.liveness);
+        assert_eq!(cfg.sender.imap_username, "");
     }
 }

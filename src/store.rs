@@ -59,6 +59,7 @@ pub struct TrapMail {
     pub body: String,
 }
 
+#[allow(dead_code)]
 pub struct Store {
     conn: Mutex<Connection>,
     pub dir: PathBuf,
@@ -159,7 +160,7 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn add_trapmail(&self, run_id: &str, token: &str, sender: &str, subject: &str, body: &str, message_id: &str) -> Result<()> {
+    pub fn add_trapmail(&self, run_id: &str, token: &str, sender: &str, subject: &str, body: &str, message_id: &str, sent_at: Option<f64>) -> Result<()> {
         let db = self.db();
         let exists: Option<i64> = db
             .query_row("SELECT 1 FROM trapmail WHERE message_id=?1 AND token=?2", params![message_id, token], |r| r.get(0))
@@ -167,7 +168,7 @@ impl Store {
         if exists.is_none() {
             db.execute(
                 "INSERT INTO trapmail VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![run_id, token, now(), sender, subject, body, message_id],
+                params![run_id, token, sent_at.unwrap_or_else(now), sender, subject, body, message_id],
             )?;
         }
         Ok(())
