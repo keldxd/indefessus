@@ -1,0 +1,31 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            file: indefessus
+            asset: indefessus-linux-x86_64
+          - os: macos-latest
+            file: indefessus
+            asset: indefessus-macos-arm64
+          - os: windows-latest
+            file: indefessus.exe
+            asset: indefessus-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo run --release -- selftest
+      - shell: bash
+        run: cp target/release/${{ matrix.file }} ${{ matrix.asset }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}

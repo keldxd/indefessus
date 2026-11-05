@@ -1,0 +1,29 @@
+[package]
+name = "indefessus"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Check whether the AI agent connected to your inbox can be turned against you, then re-check it every day for silent changes."
+repository = "https://github.com/keldxd/indefessus"
+readme = "README.md"
+keywords = ["ai-security", "prompt-injection", "ai-agents", "email", "red-team"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+imap = "2.4"
+lettre = "0.11"
+native-tls = "0.2"
+rand = "0.8"
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
+toml = "0.8"
+
+[profile.release]
+strip = true
+lto = true
