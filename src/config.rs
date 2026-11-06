@@ -31,8 +31,9 @@ username = "trap@your-other-domain.example"
 password_env = "INDEFESSUS_TRAP_PASSWORD"
 
 [canary]
-# A public address that reaches `indefessus listen` (for example through a tunnel).
-base_url = "https://your-tunnel.example"
+# A public address that reaches `indefessus listen`.
+# "auto" uses the free tunnel started by `indefessus listen --tunnel` (needs cloudflared).
+base_url = "auto"
 listen_host = "0.0.0.0"
 listen_port = 8787
 

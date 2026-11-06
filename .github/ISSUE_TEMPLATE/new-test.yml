@@ -1,0 +1,20 @@
+name: Suggest a new test
+description: An attack on email agents that Indefessus should check for.
+title: "Test idea: "
+labels: ["new test"]
+body:
+  - type: textarea
+    id: trick
+    attributes:
+      label: What would the stranger's email try to make the agent do?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How could we see from the outside that the agent obeyed?
+      description: For example a link it opens, or mail it sends to an address we control.
+  - type: input
+    id: source
+    attributes:
+      label: Source (paper, write-up, real incident), if any

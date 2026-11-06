@@ -80,7 +80,7 @@ pub struct SmtpSender {
 }
 
 impl SmtpSender {
-    pub fn send(&self, messages: &[Message]) -> Result<()> {
+    fn transport(&self) -> Result<SmtpTransport> {
         let builder = match self.security {
             Security::Tls => SmtpTransport::relay(&self.host)?,
             Security::StartTls => SmtpTransport::starttls_relay(&self.host)?,
@@ -92,7 +92,20 @@ impl SmtpSender {
         } else {
             builder.credentials(Credentials::new(self.username.clone(), self.password.clone()))
         };
-        let mailer = builder.build();
+        Ok(builder.build())
+    }
+
+    /// Connects and logs in without sending anything (used by `indefessus doctor`).
+    pub fn test(&self) -> Result<()> {
+        match self.transport()?.test_connection() {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(anyhow!("the server did not accept the connection")),
+            Err(e) => Err(anyhow!("{e}")),
+        }
+    }
+
+    pub fn send(&self, messages: &[Message]) -> Result<()> {
+        let mailer = self.transport()?;
         for msg in messages {
             mailer.send(msg).map_err(|e| anyhow!("sending failed: {e}"))?;
             std::thread::sleep(std::time::Duration::from_secs(1)); // be gentle with small providers

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or setup help
+    url: https://github.com/keldxd/indefessus/discussions
+    about: Ask in Discussions. Include your `indefessus doctor` output, never passwords.
+  - name: Free pilot for your organisation
+    url: https://github.com/keldxd/indefessus/discussions
+    about: Use an AI agent on email? Start a thread titled "Pilot" and we'll test it with you, free.
+  - name: Security issue in Indefessus itself
+    url: https://github.com/keldxd/indefessus/blob/main/SECURITY.md
+    about: Please report privately, see SECURITY.md.

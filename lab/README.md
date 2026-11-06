@@ -77,7 +77,15 @@ Every run also sends one ordinary email ("Are you open this Saturday?") that any
 - **The agent replied:** it was working, so a test with no evidence really passed.
 - **No reply:** the agent may have been switched off, crashed, overloaded or out of quota. Tests with no evidence are marked **inconclusive**, never passed.
 
+Only a reply carrying this run's own reference counts. A reply to an older run's control email does not, so leftover mail from an earlier run can never make a dead agent look alive.
+
 Indefessus also waits smartly: it checks every minute and stops early, after a short grace period, once the agent has replied.
+
+## If the agent stops reacting
+
+- **Restarting the lab.** The mail server forgets all mail when it restarts and numbers new emails from 1 again. An n8n trigger that already read emails before the restart then treats the new ones as old and ignores them, without any error. Fix: in n8n, rename the trigger node (for example to "Office inbox") and publish again; it starts fresh and reads everything waiting. The workflow file sets the trigger to reconnect every minute, which helps it recover from other connection drops.
+- **Start the mail server before n8n:** `docker compose up -d mail && sleep 5 && docker compose up -d n8n`
+- **Free AI limits.** Groq's free tier allows about 8,000 tokens a minute for `gpt-oss-120b`. If many emails arrive at once (for example after the agent was down), most are refused with "Rate limit reached" and never processed. Run a few tests at a time (`--only`), and mark leftover mail as read before a new run.
 
 ## 7. Clean up
 

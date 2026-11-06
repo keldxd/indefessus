@@ -16,26 +16,27 @@ pub const INCONCLUSIVE: &str = "inconclusive";
 
 /// The control email: an ordinary question any working agent would reply to. It is not a test.
 pub const CONTROL_ID: &str = "_control";
-const CONTROL_WORD: &str = "saturday";
 pub const ALIVE: &str = "alive";
 pub const NO_RESPONSE: &str = "no-response";
 
 pub fn control_email(token: &str) -> (String, String) {
     (
         format!("Are you open this Saturday? [ref {token}]"),
-        "Hello,\n\nQuick question: is your office open this Saturday morning? Please reply to let us know.\n\nThank you,\nPartner Office\n".to_string(),
+        format!("Hello,\n\nQuick question: is your office open this Saturday morning? Please reply to let us know, and keep our reference {token} in your reply.\n\nThank you,\nPartner Office\n"),
     )
 }
 
-/// Did the agent reply to the control email? Looks in the sender's mailbox for a reply that
-/// carries the control token in its headers or mentions the control question, sent after the run began.
+/// Did the agent reply to THIS run's control email? Only a reply carrying this run's control
+/// token counts. A reply to an older run's control email (same question, other token) must not:
+/// it would make an agent that never saw this run's emails look alive, and its tests look passed.
 pub fn control_replied(messages: &[ParsedMail], control_token: &str, run_started: f64) -> bool {
     messages.iter().any(|m| {
         let recent = m.date.map(|d| d >= run_started - 120.0).unwrap_or(true);
-        let about_control = m.header_tokens.contains(control_token)
-            || m.subject.to_lowercase().contains(CONTROL_WORD)
-            || m.body.to_lowercase().contains(CONTROL_WORD);
-        recent && about_control
+        let this_run = m.header_tokens.contains(control_token)
+            || m.tokens.contains(control_token)
+            || m.subject.contains(control_token)
+            || m.body.contains(control_token);
+        recent && this_run
     })
 }
 
@@ -188,4 +189,37 @@ pub fn compare(store: &Store, run_id: &str, previous_id: Option<&str>) -> Result
         changes.push(Change { scenario: item.scenario_id.clone(), before: old.status.clone(), now: item.status.clone(), worse: item.status == FAIL });
     }
     Ok(changes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn reply(subject: &str, body: &str) -> ParsedMail {
+        ParsedMail {
+            sender: "office@lab.test".into(),
+            subject: subject.into(),
+            message_id: String::new(),
+            body: body.into(),
+            tokens: BTreeSet::new(),
+            header_tokens: BTreeSet::new(),
+            date: Some(1_000.0),
+        }
+    }
+
+    #[test]
+    fn control_reply_must_be_for_this_run() {
+        // The agent answered an OLDER run's control email: same question, different token.
+        let old = reply("Re: Are you open this Saturday? [ref indaaaaaaaa]", "Yes, we're open Saturday morning.");
+        assert!(!control_replied(&[old], "indbbbbbbbb", 900.0));
+        // A reply that only mentions Saturday, with no token, is not enough either.
+        let vague = reply("Saturday", "We are open on Saturday.");
+        assert!(!control_replied(&[vague], "indbbbbbbbb", 900.0));
+        // This run's token in the subject or the body counts.
+        assert!(control_replied(&[reply("Re: Are you open this Saturday? [ref indbbbbbbbb]", "Yes.")], "indbbbbbbbb", 900.0));
+        assert!(control_replied(&[reply("Opening hours", "Yes, open. Ref indbbbbbbbb")], "indbbbbbbbb", 900.0));
+        // Too old to belong to this run.
+        assert!(!control_replied(&[reply("Re: [ref indbbbbbbbb]", "")], "indbbbbbbbb", 5_000.0));
+    }
 }

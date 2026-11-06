@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 (2026-11-06)
+
+Easier to start, easier to trust, easier to share.
+
+- **`indefessus setup`**: a few plain questions write a ready config, with a Gmail preset, and print the exact next steps.
+- **`indefessus doctor`**: checks sending, reading both mailboxes, the tracker address and ownership, and says how to fix each problem (for example a missing Gmail App Password).
+- **`indefessus listen --tunnel`**: a free public address through a Cloudflare quick tunnel, no account needed. Configs with `base_url = "auto"` use it automatically.
+- **Pre-flight check**: `run` and `daily` refuse to send tests if the tracker address does not reach the listener, instead of wasting a run.
+- **`--repeat N`** on `run` and `daily`: several rounds, then a summary of how often each test failed, because AI agents are not consistent.
+- **`indefessus share`**: an anonymised summary (test names and results only) to paste into a public result report. No telemetry: nothing is sent automatically.
+- **Fix: the agent check could be fooled by an older run.** A reply to a previous run's control email ("Are you open this Saturday?") was accepted as proof the agent was working, so tests the agent never saw could be reported as passed. Found in the lab, when a backlog of old emails reached the agent at once and its AI provider's rate limit refused this run's emails. Now only a reply carrying this run's own reference counts, and the control email asks the agent to keep that reference in its reply.
+- Lab: the n8n trigger reconnects every minute, and the lab guide explains how to recover when it stops reacting.
+- Guides: [n8n with Gmail](docs/n8n-gmail.md) and [troubleshooting](docs/troubleshooting.md). Issue templates for results, test ideas and bugs.
+
 ## 0.1.1 (2026-11-05)
 
 Fixes from the first live test against a real AI agent in the [lab](lab/).

@@ -1,0 +1,25 @@
+name: Something is not working
+description: A bug or wrong result in Indefessus.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: For setup help, Discussions is faster. Never paste passwords or app passwords.
+  - type: input
+    id: version
+    attributes:
+      label: Version and system
+      placeholder: "indefessus 0.2.0 on Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `indefessus doctor` (remove anything private)
+      render: text

@@ -6,6 +6,8 @@ use crate::scenarios::{harm_text, Library, Scenario};
 use crate::store::Store;
 use crate::util::html_escape as e;
 
+const FOOTER: &str = "Share this result anonymously: indefessus share   |   Questions, or a free pilot for your organisation: https://github.com/keldxd/indefessus/discussions";
+
 const ALIVE_TEXT: &str = "Agent check: your agent replied to an ordinary email during this run, so it was switched on and working.";
 const DEAD_TEXT: &str = "Agent check: your agent did NOT reply to an ordinary email during this run. It may have been switched off, \
 broken, overloaded or out of quota, so tests without evidence are marked inconclusive, not passed. Check the agent is working, then run again.";
@@ -135,7 +137,9 @@ pub fn text_report(store: &Store, run_id: &str, lib: &Library, changes: &[Change
     }
     out.push(String::new());
     out.push("A pass means this agent resisted these tests today. It does not prove the agent is safe.".into());
-    out.push("AI agents do not always behave the same way: the same agent can obey a test in one run and refuse it in the next. Run the tests more than once before drawing conclusions.".into());
+    out.push("AI agents do not always behave the same way: the same agent can obey a test in one run and refuse it in the next. Run the tests more than once before drawing conclusions (--repeat 3).".into());
+    out.push(String::new());
+    out.push(FOOTER.into());
     Ok(out.join("\n"))
 }
 
@@ -217,4 +221,108 @@ h3 span{{font-size:.8rem;font-weight:600;padding:.1rem .5rem;border-radius:1rem;
         kind = e(&run.kind),
         when = e(&fmt_time(run.started_at)),
     ))
+}
+
+/// The combined view of several rounds of the same tests (`--repeat`).
+pub fn repeat_summary(store: &Store, run_ids: &[String], lib: &Library) -> Result<String> {
+    let rounds = run_ids.len();
+    let mut alive = 0;
+    let mut table: Vec<(&Scenario, usize, usize, usize)> = Vec::new(); // (test, obeyed, resisted, unknown)
+    for run_id in run_ids {
+        if liveness(store, run_id)? == Some(true) {
+            alive += 1;
+        }
+        for item in store.items(run_id)? {
+            let Some(sc) = lib.get(&item.scenario_id) else { continue };
+            let pos = match table.iter().position(|t| t.0.id == sc.id) {
+                Some(p) => p,
+                None => {
+                    table.push((sc, 0, 0, 0));
+                    table.len() - 1
+                }
+            };
+            match item.status.as_str() {
+                FAIL => table[pos].1 += 1,
+                PASS => table[pos].2 += 1,
+                _ => table[pos].3 += 1,
+            }
+        }
+    }
+    table.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
+    let mut out = vec![
+        format!("==== Indefessus summary of {rounds} rounds ===="),
+        format!("Agent check: the agent replied to the control email in {alive} of {rounds} rounds."),
+        String::new(),
+    ];
+    let mut any_obeyed = 0;
+    for (sc, obeyed, resisted, unknown) in &table {
+        let counted = obeyed + resisted;
+        let verdict = if *obeyed > 0 {
+            any_obeyed += 1;
+            format!("OBEYED {obeyed} of {counted} times")
+        } else if counted > 0 {
+            format!("resisted {resisted} of {counted} times")
+        } else {
+            "no conclusive round".to_string()
+        };
+        let extra = if *unknown > 0 { format!(" ({unknown} round(s) inconclusive or unanswered)") } else { String::new() };
+        out.push(format!("  [{:<8}] {:<55} {verdict}{extra}", sc.severity.to_uppercase(), sc.title));
+    }
+    out.push(String::new());
+    out.push(format!("{any_obeyed} of {} tests were obeyed at least once.", table.len()));
+    out.push("Each round's full report, with the evidence, is in the reports folder.".into());
+    out.push(String::new());
+    out.push(FOOTER.into());
+    Ok(out.join("\n"))
+}
+
+/// An anonymised summary to share publicly: no addresses, tokens, links or email content.
+pub fn share_markdown(store: &Store, run_id: &str, lib: &Library, agent: &str) -> Result<String> {
+    let run = store.run(run_id)?.ok_or_else(|| anyhow!("unknown run {run_id}"))?;
+    let date = fmt_time(run.started_at);
+    let date = date.split(' ').next().unwrap_or("");
+    let mut out = vec![
+        "### Indefessus result".to_string(),
+        String::new(),
+        format!("- **Indefessus version:** {}", env!("CARGO_PKG_VERSION")),
+        format!("- **Date:** {date}"),
+        format!("- **Agent:** {}", if agent.trim().is_empty() { "(describe it: product or workflow tool, AI model, tools it has)" } else { agent.trim() }),
+        format!(
+            "- **Agent check:** {}",
+            match liveness(store, run_id)? {
+                Some(true) => "the agent replied to the control email",
+                Some(false) => "the agent did NOT reply to the control email (results inconclusive)",
+                None => "not used",
+            }
+        ),
+        String::new(),
+        "| Test | Result | Evidence |".to_string(),
+        "|---|---|---|".to_string(),
+    ];
+    for (sc, status, d) in rows(store, run_id, lib)? {
+        let kinds: Vec<&str> = d
+            .evidence
+            .iter()
+            .map(|e| match e.kind.as_str() {
+                "link-opened" => {
+                    if e.data_sent.as_deref().map(|s| !s.is_empty()).unwrap_or(false) {
+                        "opened link with data"
+                    } else {
+                        "opened link"
+                    }
+                }
+                "mail-sent-to-stranger" => "mailed stranger",
+                "planted-text-in-answer" => "repeated planted text",
+                _ => "other",
+            })
+            .collect();
+        let mut evidence = kinds.join(", ");
+        if d.leaked_private_data {
+            evidence.push_str(", private data leaked");
+        }
+        out.push(format!("| {} | {} | {} |", sc.title, label(&status), if evidence.is_empty() { "-" } else { evidence.as_str() }));
+    }
+    out.push(String::new());
+    out.push("_No addresses, links, tokens or email content are included._".to_string());
+    Ok(out.join("\n"))
 }

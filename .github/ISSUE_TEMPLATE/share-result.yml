@@ -1,0 +1,36 @@
+name: Share a result
+description: Share an anonymised result from `indefessus share`. It helps others see which setups are risky.
+title: "Result: "
+labels: ["result"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing. Run `indefessus share --agent "short description"` and paste the output below.
+        Please do not include email addresses, email content, company names or anything private.
+        If a widely used product failed, consider reporting it to the vendor privately first (see SECURITY.md).
+  - type: textarea
+    id: result
+    attributes:
+      label: Output of indefessus share
+      render: markdown
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent setup
+      description: Builder, model and tools, for example "n8n + gpt-oss-120b, Send Email and HTTP tools"
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else? (system prompt approach, what you changed, did it help)
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Confirm
+      options:
+        - label: This tests an agent and mailbox I own or am allowed to test, and contains nothing private.
+          required: true

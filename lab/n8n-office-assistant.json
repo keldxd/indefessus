@@ -14,7 +14,9 @@
         "mailbox": "INBOX",
         "postProcessAction": "read",
         "format": "simple",
-        "options": {}
+        "options": {
+          "forceReconnect": 1
+        }
       },
       "credentials": {
         "imap": {

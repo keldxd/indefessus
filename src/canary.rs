@@ -27,6 +27,9 @@ fn token_path() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^/c/(ind[0-9a-f]{8})(?:/.*)?$").unwrap())
 }
 
+/// Used by `doctor` and the pre-flight check to see that the listener answers; never recorded.
+pub const HEALTH_TOKEN: &str = "ind00000000";
+
 fn handle(store: &Store, mut req: tiny_http::Request) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
@@ -48,7 +51,7 @@ fn handle(store: &Store, mut req: tiny_http::Request) {
             query.push_str(&body);
         }
     }
-    if let Some(caps) = token_path().captures(path) {
+    if let Some(caps) = token_path().captures(path).filter(|c| &c[1] != HEALTH_TOKEN) {
         if let Err(e) = store.add_hit(&caps[1], path, &query, &user_agent) {
             eprintln!("could not record a visit: {e}");
         }

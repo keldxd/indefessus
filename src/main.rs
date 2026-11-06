@@ -4,14 +4,18 @@
 mod canary;
 mod clock;
 mod config;
+mod doctor;
 mod evaluate;
 mod mail;
+mod net;
 mod rawmail;
 mod report;
 mod scenarios;
 mod selftest;
 mod store;
+mod tunnel;
 mod util;
+mod wizard;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
@@ -39,24 +43,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Write an example config file
+    /// Set up a config by answering a few questions (start here)
+    Setup,
+    /// Check every part of your setup and say how to fix what is wrong
+    Doctor,
+    /// Write an example config file to fill in by hand
     Init,
     /// List the test library
     Scenarios,
-    /// Prove the pipeline works with two stand-in agents, no mailbox needed
+    /// Prove the pipeline works with stand-in agents, no mailbox needed
     Selftest,
     /// Prove you own the target mailbox (required before any test)
     Verify,
     /// Run the listener that records visits to the tests' links
-    Listen,
+    Listen {
+        /// Also open a free public tunnel to it (needs `cloudflared`), for base_url = "auto"
+        #[arg(long)]
+        tunnel: bool,
+    },
     /// Send the test emails
     Run {
         /// Test ids to run (default: all)
         #[arg(long, num_args = 1..)]
         only: Vec<String>,
-        /// Minutes to wait, then check automatically
+        /// Minutes to wait at most, then check automatically
         #[arg(long)]
         wait: Option<u64>,
+        /// Run the tests this many times and summarise (AI agents are not consistent)
+        #[arg(long, default_value_t = 1)]
+        repeat: u32,
     },
     /// Collect evidence and print the report
     Check {
@@ -77,9 +92,20 @@ enum Cmd {
     },
     /// Automatic tests for a daily schedule; exit code 2 if behaviour got worse
     Daily {
-        /// Minutes to wait (default: from config)
+        /// Minutes to wait at most (default: from config)
         #[arg(long)]
         wait: Option<u64>,
+        /// Run the tests this many times and summarise
+        #[arg(long, default_value_t = 1)]
+        repeat: u32,
+    },
+    /// Print an anonymised summary of a run, to share publicly (no addresses or email content)
+    Share {
+        #[arg(long)]
+        run: Option<String>,
+        /// Describe the agent, for example "n8n + gpt-oss-120b, can send email and open links"
+        #[arg(long, default_value = "")]
+        agent: String,
     },
 }
 
@@ -122,11 +148,13 @@ fn start_run(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_o
     if chosen.is_empty() {
         bail!("No tests selected.");
     }
+    let base_url = tunnel::resolve_base_url(&cfg.canary.base_url, Path::new(&cfg.run.data_dir))?;
+    preflight(cfg, &base_url)?;
     let run_id = util::run_id(util::now());
     store.new_run(&run_id, "live", "")?;
     let (mut seeds, mut tests, mut guided) = (Vec::new(), Vec::new(), Vec::new());
     for sc in chosen {
-        let r = scenarios::render(sc, &cfg.canary.base_url, &cfg.trap.address, cfg.trap.plus_addressing);
+        let r = scenarios::render(sc, &base_url, &cfg.trap.address, cfg.trap.plus_addressing);
         store.add_item(&run_id, &sc.id, &r.token, &r.seed_secret)?;
         if sc.has_seed() {
             seeds.push(build_message(&Outgoing {
@@ -184,6 +212,25 @@ fn start_run(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_o
     Ok(run_id)
 }
 
+/// Before sending anything: the agent must be able to reach the tracker address, or the run is wasted.
+fn preflight(cfg: &Config, base_url: &str) -> Result<()> {
+    let check = if base_url.contains("host.docker.internal") {
+        // The lab: that name only works inside Docker, so check the listener locally
+        net::tracker_reachable(&format!("http://127.0.0.1:{}", cfg.canary.listen_port))
+    } else {
+        net::tracker_reachable(base_url)
+    };
+    if let Err(e) = check {
+        bail!(
+            "the tracker address {base_url} does not reach the Indefessus listener, so the test links would not work.\n\
+             Start the listener in another terminal and leave it running: indefessus listen{}\n\
+             Then check everything with: indefessus doctor\nDetails: {e:#}",
+            if cfg.canary.base_url.trim() == tunnel::AUTO { " --tunnel" } else { "" }
+        );
+    }
+    Ok(())
+}
+
 fn previous_finished(store: &Store, run_id: &str) -> Result<Option<String>> {
     Ok(store.latest_runs("live", true, 20)?.into_iter().map(|r| r.id).find(|id| id.as_str() < run_id))
 }
@@ -237,6 +284,10 @@ fn wait_for_agent(cfg: &Config, store: &Store, run_id: &str, max_minutes: u64) {
 }
 
 fn finish_check(cfg: &Config, store: &Store, lib: &Library, run_id: &str) -> Result<Vec<evaluate::Change>> {
+    finish_check_with(cfg, store, lib, run_id, true)
+}
+
+fn finish_check_with(cfg: &Config, store: &Store, lib: &Library, run_id: &str, print: bool) -> Result<Vec<evaluate::Change>> {
     let usernames = if cfg.trap.read_each_address {
         store
             .items(run_id)?
@@ -255,24 +306,47 @@ fn finish_check(cfg: &Config, store: &Store, lib: &Library, run_id: &str) -> Res
     }
     store.finish_run(run_id)?;
     let changes = evaluate::compare(store, run_id, previous_finished(store, run_id)?.as_deref())?;
-    println!("{}", report::text_report(store, run_id, lib, &changes)?);
     let dir = Path::new(&cfg.run.data_dir).join("reports");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{run_id}.html"));
     std::fs::write(&path, report::html_report(store, run_id, lib, &changes)?)?;
-    println!("\nFull report: {}", path.display());
+    if print {
+        println!("{}", report::text_report(store, run_id, lib, &changes)?);
+        println!("\nFull report: {}", path.display());
+    } else {
+        println!("  round finished: report saved to {}", path.display());
+    }
     Ok(changes)
+}
+
+/// Several rounds of the same tests, one after the other, then a combined summary.
+fn run_rounds(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_only: bool, rounds: u32, wait: u64) -> Result<Vec<evaluate::Change>> {
+    let mut run_ids = Vec::new();
+    let mut all_changes = Vec::new();
+    for round in 1..=rounds {
+        println!("\n== Round {round} of {rounds} ==");
+        let run_id = start_run(cfg, store, lib, only, auto_only)?;
+        wait_for_agent(cfg, store, &run_id, wait);
+        all_changes.extend(finish_check_with(cfg, store, lib, &run_id, rounds == 1)?);
+        run_ids.push(run_id);
+    }
+    if rounds > 1 {
+        println!("\n{}", report::repeat_summary(store, &run_ids, lib)?);
+    }
+    Ok(all_changes)
 }
 
 fn real_main() -> Result<i32> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Setup => wizard::run(&cli.config)?,
+        Cmd::Doctor => return Ok(doctor::run(&Config::load(&cli.config)?)),
         Cmd::Init => {
             if cli.config.exists() {
                 bail!("{} already exists, not overwriting it.", cli.config.display());
             }
             std::fs::write(&cli.config, config::EXAMPLE)?;
-            println!("Wrote {}. Fill it in, set the password environment variables, then run: indefessus verify", cli.config.display());
+            println!("Wrote {}. Fill it in, set the password environment variables, then run: indefessus doctor\n(Easier: `indefessus setup` asks a few questions and writes it for you.)", cli.config.display());
         }
         Cmd::Scenarios => {
             let extra = Config::load(&cli.config).map(|c| c.run.extra_scenarios).unwrap_or_default();
@@ -306,24 +380,43 @@ fn real_main() -> Result<i32> {
             Store::open(Path::new(&cfg.run.data_dir))?.mark_verified(&cfg.target.mailbox)?;
             println!("Verified. You can now run tests against {}.", cfg.target.mailbox);
         }
-        Cmd::Listen => {
+        Cmd::Listen { tunnel: with_tunnel } => {
             let cfg = Config::load(&cli.config)?;
-            let store = Arc::new(Store::open(Path::new(&cfg.run.data_dir))?);
+            let data_dir = Path::new(&cfg.run.data_dir);
+            let store = Arc::new(Store::open(data_dir)?);
+            let mut child = None;
+            let public = if with_tunnel {
+                println!("Starting a free Cloudflare tunnel (this takes a few seconds)...");
+                let (c, address) = tunnel::start(cfg.canary.listen_port, data_dir)?;
+                child = Some(c);
+                if cfg.canary.base_url.trim() != tunnel::AUTO {
+                    println!("Note: your config has base_url = \"{}\". Set it to \"auto\" to use this tunnel.", cfg.canary.base_url);
+                }
+                address
+            } else {
+                cfg.canary.base_url.clone()
+            };
             println!(
-                "Listening on {}:{}, public address {}. Leave this running during tests. Ctrl+C to stop.",
-                cfg.canary.listen_host, cfg.canary.listen_port, cfg.canary.base_url
+                "Listening on {}:{}, public address {public}\nLeave this running during tests. Ctrl+C to stop.",
+                cfg.canary.listen_host, cfg.canary.listen_port
             );
-            canary::serve_forever(store, &cfg.canary.listen_host, cfg.canary.listen_port)?;
+            let result = canary::serve_forever(store, &cfg.canary.listen_host, cfg.canary.listen_port);
+            if let Some(mut c) = child {
+                let _ = c.kill();
+            }
+            result?;
         }
-        Cmd::Run { only, wait } => {
+        Cmd::Run { only, wait, repeat } => {
             let cfg = Config::load(&cli.config)?;
             let (store, lib) = open(&cfg)?;
-            let run_id = start_run(&cfg, &store, &lib, &only, false)?;
+            let repeat = repeat.max(1);
             match wait {
-                None => println!("\nGive the agent time to read the emails, then run: indefessus check"),
-                Some(minutes) => {
-                    wait_for_agent(&cfg, &store, &run_id, minutes);
-                    finish_check(&cfg, &store, &lib, &run_id)?;
+                None if repeat == 1 => {
+                    start_run(&cfg, &store, &lib, &only, false)?;
+                    println!("\nGive the agent time to read the emails, then run: indefessus check");
+                }
+                _ => {
+                    run_rounds(&cfg, &store, &lib, &only, false, repeat, wait.unwrap_or(cfg.run.wait_minutes))?;
                 }
             }
         }
@@ -362,15 +455,24 @@ fn real_main() -> Result<i32> {
             let changes = evaluate::compare(&store, &run_id, previous_finished(&store, &run_id)?.as_deref())?;
             println!("{}", report::text_report(&store, &run_id, &lib, &changes)?);
         }
-        Cmd::Daily { wait } => {
+        Cmd::Daily { wait, repeat } => {
             let cfg = Config::load(&cli.config)?;
             let (store, lib) = open(&cfg)?;
-            let run_id = start_run(&cfg, &store, &lib, &[], true)?;
-            wait_for_agent(&cfg, &store, &run_id, wait.unwrap_or(cfg.run.wait_minutes));
-            let changes = finish_check(&cfg, &store, &lib, &run_id)?;
+            let changes = run_rounds(&cfg, &store, &lib, &[], true, repeat.max(1), wait.unwrap_or(cfg.run.wait_minutes))?;
             if changes.iter().any(|c| c.worse) {
                 return Ok(2);
             }
+        }
+        Cmd::Share { run, agent } => {
+            let cfg = Config::load(&cli.config)?;
+            let (store, lib) = open(&cfg)?;
+            let run_id = match run {
+                Some(r) => r,
+                None => latest_live(&store)?,
+            };
+            println!("{}", report::share_markdown(&store, &run_id, &lib, &agent)?);
+            println!("\n---\nCopy everything above the line into a new result report:");
+            println!("https://github.com/keldxd/indefessus/issues/new?template=share-result.yml");
         }
     }
     Ok(0)
