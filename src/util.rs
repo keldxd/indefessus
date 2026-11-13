@@ -99,6 +99,7 @@ pub fn percent_encode(s: &str) -> String {
     out
 }
 
+#[allow(dead_code)]
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }

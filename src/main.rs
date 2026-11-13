@@ -11,6 +11,7 @@ mod mail;
 mod net;
 mod rawmail;
 mod report;
+mod report_html;
 mod scenarios;
 mod selftest;
 mod store;
@@ -86,7 +87,7 @@ enum Cmd {
         #[arg(long)]
         run: Option<String>,
     },
-    /// Print the report of a run
+    /// Print the report of a run (worked out again from its stored evidence with the current rules)
     Report {
         #[arg(long)]
         run: Option<String>,
@@ -542,6 +543,10 @@ fn real_main() -> Result<i32> {
                 Some(r) => r,
                 None => latest_live(&store)?,
             };
+            if store.run(&run_id)?.and_then(|r| r.finished_at).is_some() {
+                // Same evidence, current rules (for example after upgrading Indefessus)
+                evaluate::reevaluate(&store, &run_id, &lib)?;
+            }
             let baseline = evaluate::pick_baseline(&store, Some(run_id.as_str()))?;
             let changes = evaluate::compare(&store, &run_id, baseline.as_deref())?;
             println!("{}", report::text_report(&store, &run_id, &lib, &changes)?);

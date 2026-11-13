@@ -72,6 +72,9 @@ pub struct Detect {
     pub url_hit: bool,
     pub trap_mail: bool,
     pub output_contains: Vec<String>,
+    /// What data the trick is after, if a reply without it should count as "partly worked".
+    /// "addresses": mail to the stranger that holds no email addresses only partly worked.
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -196,6 +199,9 @@ pub fn parse(text: &str, source: &str) -> Result<Scenario> {
     }
     if sc.mode != "auto" && sc.mode != "guided" {
         bail!("{source}: mode must be auto or guided");
+    }
+    if !(sc.detect.data.is_empty() || sc.detect.data == "addresses") {
+        bail!("{source}: detect.data can only be \"addresses\"");
     }
     if !(sc.detect.url_hit || sc.detect.trap_mail || !sc.detect.output_contains.is_empty()) {
         bail!("{source}: a test needs at least one detection signal");
