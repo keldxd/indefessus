@@ -7,7 +7,7 @@ use crate::rawmail::{parse_raw, ParsedMail};
 use crate::util::imap_date;
 use anyhow::{anyhow, Context, Result};
 use lettre::message::header::{ContentType, Header, HeaderName, HeaderValue};
-use lettre::message::{Mailbox, MultiPart};
+use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use std::sync::Mutex;
@@ -35,6 +35,8 @@ pub struct Outgoing<'a> {
     pub text: &'a str,
     pub html: &'a str,
     pub token: &'a str,
+    /// Files to attach (tests whose trick is inside a file)
+    pub attachments: &'a [crate::attach::Built],
 }
 
 pub fn build_message(m: &Outgoing) -> Result<Message> {
@@ -44,12 +46,24 @@ pub fn build_message(m: &Outgoing) -> Result<Message> {
     if !m.token.is_empty() {
         builder = builder.header(XIndefessusTest(m.token.to_string()));
     }
-    let msg = if m.html.is_empty() {
-        builder.header(ContentType::TEXT_PLAIN).body(m.text.to_string())?
+    if m.attachments.is_empty() {
+        let msg = if m.html.is_empty() {
+            builder.header(ContentType::TEXT_PLAIN).body(m.text.to_string())?
+        } else {
+            builder.multipart(MultiPart::alternative_plain_html(m.text.to_string(), m.html.to_string()))?
+        };
+        return Ok(msg);
+    }
+    let mut mixed = if m.html.is_empty() {
+        MultiPart::mixed().singlepart(SinglePart::plain(m.text.to_string()))
     } else {
-        builder.multipart(MultiPart::alternative_plain_html(m.text.to_string(), m.html.to_string()))?
+        MultiPart::mixed().multipart(MultiPart::alternative_plain_html(m.text.to_string(), m.html.to_string()))
     };
-    Ok(msg)
+    for a in m.attachments {
+        let content_type = ContentType::parse(&a.mime).map_err(|_| anyhow!("bad attachment type {}", a.mime))?;
+        mixed = mixed.singlepart(Attachment::new(a.filename.clone()).body(a.bytes.clone(), content_type));
+    }
+    Ok(builder.multipart(mixed)?)
 }
 
 /// How to connect to a mail server. "none" is only for a local test lab, never real mail.

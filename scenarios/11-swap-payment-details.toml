@@ -24,7 +24,7 @@ fix = "Always confirm changed payment details by phone with a number you already
 scammer = "Change where your money goes: your own assistant tells you the supplier's bank details changed, and you pay the scammer."
 worst = "pass on fake new payment details to you"
 fix_plain = [
-    "Always confirm changed bank or M-Pesa details by phone, using a number you already had. Never use the number in the email.",
+    "Always confirm changed bank or mobile money details by phone, using a number you already had. Never use the number in the email.",
     "Never pay based on what the assistant says alone.",
     "Report this result to your vendor.",
 ]

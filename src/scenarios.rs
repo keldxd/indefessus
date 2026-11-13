@@ -7,6 +7,8 @@
 //!   {{token}}        the unique marker of this test in this run
 //!   {{seed_secret}}  a fake private code planted in a separate "seed" email
 //!   {{base64:...}}   hides the text inside in base64 (after the placeholders in it are filled)
+//!
+//! A test can also attach files ([[attachments]]); they are built at run time by attach.rs.
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
@@ -54,6 +56,14 @@ const BUILTIN: &[(&str, &str)] = &[
     ("10-hijack-summary.toml", include_str!("../scenarios/10-hijack-summary.toml")),
     ("11-swap-payment-details.toml", include_str!("../scenarios/11-swap-payment-details.toml")),
     ("12-reveal-private-code.toml", include_str!("../scenarios/12-reveal-private-code.toml")),
+    ("13-file-pdf-white-text.toml", include_str!("../scenarios/13-file-pdf-white-text.toml")),
+    ("14-file-pdf-metadata.toml", include_str!("../scenarios/14-file-pdf-metadata.toml")),
+    ("15-file-word-hidden-text.toml", include_str!("../scenarios/15-file-word-hidden-text.toml")),
+    ("16-file-word-comment.toml", include_str!("../scenarios/16-file-word-comment.toml")),
+    ("17-file-calendar-invite.toml", include_str!("../scenarios/17-file-calendar-invite.toml")),
+    ("18-file-spreadsheet-cell.toml", include_str!("../scenarios/18-file-spreadsheet-cell.toml")),
+    ("19-file-text-note.toml", include_str!("../scenarios/19-file-text-note.toml")),
+    ("20-file-web-page.toml", include_str!("../scenarios/20-file-web-page.toml")),
 ];
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -96,6 +106,20 @@ impl Explain {
     }
 }
 
+/// A file attached to a test email. Its text can use the same placeholders as the email.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AttachmentSpec {
+    /// txt, html, csv, ics, pdf or docx
+    pub kind: String,
+    /// Where the instruction goes (see attach::KINDS); empty means the first one listed
+    pub hide: String,
+    pub filename: String,
+    pub title: String,
+    pub visible: String,
+    pub hidden: String,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -113,6 +137,7 @@ pub struct Scenario {
     pub seed_subject: String,
     pub seed_body: String,
     pub guided_prompt: String,
+    pub attachments: Vec<AttachmentSpec>,
     pub detect: Detect,
     pub explain: Explain,
     #[serde(skip)]
@@ -125,6 +150,10 @@ impl Scenario {
     }
     pub fn is_guided(&self) -> bool {
         self.mode == "guided"
+    }
+    /// Tests whose trick is inside an attached file
+    pub fn has_attachments(&self) -> bool {
+        !self.attachments.is_empty()
     }
     /// Sort key, most dangerous first: what it costs, then how severe.
     pub fn danger_rank(&self) -> (usize, usize) {
@@ -173,6 +202,15 @@ pub fn parse(text: &str, source: &str) -> Result<Scenario> {
     }
     if sc.is_guided() && sc.guided_prompt.is_empty() {
         bail!("{source}: guided tests need a guided_prompt");
+    }
+    for a in &mut sc.attachments {
+        a.hide = crate::attach::check(&a.kind, &a.hide).map_err(|e| anyhow::anyhow!("{source}: {e}"))?;
+        if !a.filename.to_lowercase().ends_with(&format!(".{}", a.kind)) {
+            bail!("{source}: attachment {} must end in .{}", a.filename, a.kind);
+        }
+        if a.hidden.trim().is_empty() || a.visible.trim().is_empty() {
+            bail!("{source}: attachment {} needs both visible and hidden text", a.filename);
+        }
     }
     Ok(sc)
 }
@@ -268,9 +306,10 @@ pub struct Rendered {
     pub seed_subject: String,
     pub seed_body: String,
     pub guided_prompt: String,
+    pub attachments: Vec<crate::attach::Built>,
 }
 
-pub fn render(sc: &Scenario, canary_base: &str, trap: &str, plus_addressing: bool) -> Rendered {
+pub fn render(sc: &Scenario, canary_base: &str, trap: &str, plus_addressing: bool) -> Result<Rendered> {
     let token = new_token();
     let v = Values {
         canary_url: format!("{}/c/{}", canary_base.trim_end_matches('/'), token),
@@ -278,7 +317,24 @@ pub fn render(sc: &Scenario, canary_base: &str, trap: &str, plus_addressing: boo
         seed_secret: new_seed_secret(),
         token,
     };
-    Rendered {
+    let mut attachments = Vec::new();
+    for a in &sc.attachments {
+        let (filename, title, visible, hidden) = (v.fill(&a.filename), v.fill(&a.title), v.fill(&a.visible), v.fill(&a.hidden));
+        let built = crate::attach::build(&crate::attach::Spec {
+            kind: &a.kind,
+            hide: &a.hide,
+            filename: &filename,
+            title: &title,
+            visible: &visible,
+            hidden: &hidden,
+            uid: &v.token,
+            now_secs: crate::util::now() as u64,
+        })
+        .map_err(|e| anyhow::anyhow!("{}: {e}", sc.id))?;
+        attachments.push(built);
+    }
+    Ok(Rendered {
+        attachments,
         subject: v.fill(&sc.subject),
         body_text: v.fill(&sc.body_text),
         body_html: v.fill(&sc.body_html),
@@ -290,7 +346,7 @@ pub fn render(sc: &Scenario, canary_base: &str, trap: &str, plus_addressing: boo
         seed_secret: v.seed_secret,
         canary_url: v.canary_url,
         trap_email: v.trap_email,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -309,7 +365,7 @@ mod tests {
     #[test]
     fn markers_never_in_subjects() {
         for sc in &load_library(&[]).unwrap().list {
-            let r = render(sc, "https://c.example", "trap@t.example", true);
+            let r = render(sc, "https://c.example", "trap@t.example", true).unwrap();
             assert!(!r.subject.contains(&r.token), "{}", sc.id);
             assert!(!r.subject.contains(&r.seed_secret), "{}", sc.id);
         }
@@ -318,11 +374,37 @@ mod tests {
     #[test]
     fn base64_is_filled_after_placeholders() {
         let lib = load_library(&[]).unwrap();
-        let r = render(lib.get("leak-link-encoded").unwrap(), "https://c.example", "trap@t.example", true);
+        let r = render(lib.get("leak-link-encoded").unwrap(), "https://c.example", "trap@t.example", true).unwrap();
         assert!(!r.body_text.contains("{{"));
         let blob = r.body_text.split_whitespace().find(|w| w.len() > 40).unwrap();
         let decoded = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(blob).unwrap()).unwrap();
         assert!(decoded.contains(&r.canary_url));
+    }
+
+    /// The trick is in the file, not the email: the marker must be in the attachment and not
+    /// in the email text, or the test would not test attachments at all.
+    #[test]
+    fn attachment_tests_hide_the_trick_in_the_file() {
+        let lib = load_library(&[]).unwrap();
+        let with_files: Vec<_> = lib.list.iter().filter(|s| s.has_attachments()).collect();
+        assert!(with_files.len() >= 8);
+        for sc in with_files {
+            let r = render(sc, "https://c.example", "trap@t.example", true).unwrap();
+            assert!(!r.body_text.contains(&r.token) && !r.body_html.contains(&r.token), "{}: marker in the email text", sc.id);
+            let in_files = r.attachments.iter().any(|a| crate::attach::extract_text(&a.filename, &a.bytes).contains(&r.token));
+            assert!(in_files, "{}: marker not in the attachment", sc.id);
+        }
+    }
+
+    #[test]
+    fn bad_attachments_rejected() {
+        let base = "id='x'\ntitle='t'\nharm='leak'\nsubject='s'\nbody_text='b'\n[[attachments]]\n";
+        let tail = "\n[detect]\nurl_hit=true";
+        assert!(parse(&format!("{base}kind='exe'\nfilename='a.exe'\nvisible='v'\nhidden='h'{tail}"), "x").is_err());
+        assert!(parse(&format!("{base}kind='pdf'\nfilename='a.txt'\nvisible='v'\nhidden='h'{tail}"), "x").is_err());
+        assert!(parse(&format!("{base}kind='pdf'\nhide='comment'\nfilename='a.pdf'\nvisible='v'\nhidden='h'{tail}"), "x").is_err());
+        let ok = parse(&format!("{base}kind='pdf'\nfilename='a.pdf'\nvisible='v'\nhidden='h'{tail}"), "x").unwrap();
+        assert_eq!(ok.attachments[0].hide, "white");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! then re-check it every day for silent changes.
 
 mod canary;
+mod attach;
 mod clock;
 mod config;
 mod doctor;
@@ -170,9 +171,10 @@ fn start_run(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_o
     preflight(cfg, &base_url)?;
     let run_id = util::run_id(util::now());
     store.new_run(&run_id, "live", "")?;
+    let has_files = chosen.iter().any(|sc| sc.has_attachments());
     let (mut seeds, mut tests, mut guided) = (Vec::new(), Vec::new(), Vec::new());
     for sc in chosen {
-        let r = scenarios::render(sc, &base_url, &cfg.trap.address, cfg.trap.plus_addressing);
+        let r = scenarios::render(sc, &base_url, &cfg.trap.address, cfg.trap.plus_addressing)?;
         store.add_item(&run_id, &sc.id, &r.token, &r.seed_secret)?;
         if sc.has_seed() {
             seeds.push(build_message(&Outgoing {
@@ -183,6 +185,7 @@ fn start_run(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_o
                 text: &r.seed_body,
                 html: "",
                 token: &r.token,
+                attachments: &[],
             })?);
         }
         tests.push(build_message(&Outgoing {
@@ -193,6 +196,7 @@ fn start_run(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_o
             text: &r.body_text,
             html: &r.body_html,
             token: &r.token,
+            attachments: &r.attachments,
         })?);
         if sc.is_guided() {
             guided.push((sc.id.clone(), r.guided_prompt.clone()));
@@ -200,6 +204,22 @@ fn start_run(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_o
     }
     let total = seeds.len() + tests.len();
     seeds.extend(tests);
+    if cfg.run.liveness && has_files {
+        // Proves the agent reads attachments: it can only quote this booking number from the file
+        let token = scenarios::new_token();
+        store.add_item(&run_id, evaluate::ATTACH_CHECK_ID, &token, "")?;
+        let (subject, body, file) = evaluate::attachment_check_email(&token)?;
+        seeds.push(build_message(&Outgoing {
+            from: &cfg.sender.address,
+            display_name: &cfg.sender.display_name,
+            to: &cfg.target.mailbox,
+            subject: &subject,
+            text: &body,
+            html: "",
+            token: &token,
+            attachments: std::slice::from_ref(&file),
+        })?);
+    }
     if cfg.run.liveness {
         // Sent last: once the agent has replied to it, it has very likely read the tests too
         let token = scenarios::new_token();
@@ -213,12 +233,16 @@ fn start_run(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_o
             text: &body,
             html: "",
             token: &token,
+            attachments: &[],
         })?);
     }
     sender(cfg)?.send(&seeds)?;
     println!("Run {run_id}: sent {total} test emails to {}.", cfg.target.mailbox);
     if cfg.run.liveness {
         println!("Also sent one ordinary control email (\"Are you open this Saturday?\"). A working agent should reply to it.");
+        if has_files {
+            println!("And one booking email with a PDF attached. An agent that reads attachments should quote its booking number.");
+        }
     }
     if !guided.is_empty() {
         println!("\nGuided tests: when the emails have arrived, ask your assistant these questions,");
@@ -258,7 +282,7 @@ fn list_runs(store: &Store) -> Result<()> {
     }
     println!("{:<22} {:<28} {:<14} {:<26} note", "run", "started", "agent check", "results");
     for run in runs {
-        let items: Vec<_> = store.items(&run.id)?.into_iter().filter(|i| i.scenario_id != evaluate::CONTROL_ID).collect();
+        let items: Vec<_> = store.items(&run.id)?.into_iter().filter(|i| !i.scenario_id.starts_with('_')).collect();
         let count = |s: &str| items.iter().filter(|i| i.status == s).count();
         let check = match evaluate::liveness(store, &run.id)? {
             Some(true) => "replied",
@@ -299,6 +323,17 @@ fn check_alive(cfg: &Config, store: &Store, run_id: &str) -> Result<Option<bool>
     Ok(Some(evaluate::control_replied(&messages, &control.token, started)))
 }
 
+/// Did the agent quote the booking number from the attached file? None if the run had no such check.
+fn check_attachments(cfg: &Config, store: &Store, run_id: &str) -> Result<Option<bool>> {
+    let Some(check) = store.items(run_id)?.into_iter().find(|i| i.scenario_id == evaluate::ATTACH_CHECK_ID) else {
+        return Ok(None);
+    };
+    let started = store.run(run_id)?.map(|r| r.started_at).unwrap_or(0.0);
+    let reader = imap_reader(cfg, vec![cfg.sender.imap_username.clone()])?;
+    let messages = mail::TrapSource::fetch_since(&reader, started)?;
+    Ok(Some(evaluate::attachment_read(&messages, &check.token, started)))
+}
+
 /// Waits up to `max_minutes` for the agent. With a control email, it checks every minute and stops
 /// early (after a short grace period) once the agent has replied; otherwise it waits the full time.
 fn wait_for_agent(cfg: &Config, store: &Store, run_id: &str, max_minutes: u64) {
@@ -336,7 +371,7 @@ fn finish_check_with(cfg: &Config, store: &Store, lib: &Library, run_id: &str, b
         store
             .items(run_id)?
             .iter()
-            .filter(|i| i.scenario_id != evaluate::CONTROL_ID)
+            .filter(|i| !i.scenario_id.starts_with('_'))
             .map(|i| scenarios::trap_address(&cfg.trap.address, &i.token, cfg.trap.plus_addressing))
             .collect()
     } else {
@@ -347,6 +382,9 @@ fn finish_check_with(cfg: &Config, store: &Store, lib: &Library, run_id: &str, b
     evaluate::evaluate_run(store, run_id, lib)?;
     if let Some(alive) = check_alive(cfg, store, run_id)? {
         evaluate::apply_liveness(store, run_id, alive)?;
+    }
+    if let Some(read) = check_attachments(cfg, store, run_id)? {
+        evaluate::apply_attachment_check(store, run_id, lib, read)?;
     }
     store.finish_run(run_id)?;
     let changes = evaluate::compare(store, run_id, baseline)?;
@@ -417,6 +455,7 @@ fn real_main() -> Result<i32> {
                 text: &format!("Your Indefessus ownership code is {code}.\n\nIf you did not start an Indefessus test, ignore this email."),
                 html: "",
                 token: "",
+                attachments: &[],
             })?;
             sender(&cfg)?.send(&[msg])?;
             println!("Sent a 6-digit code to {}. Only the owner of that mailbox can read it.", cfg.target.mailbox);
