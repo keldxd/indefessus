@@ -57,7 +57,7 @@ curl -s "imap://localhost:3143/INBOX;MAILINDEX=1" -u "office@lab.test:lab" | gre
 indefessus -c lab/indefessus.toml daily
 ```
 
-With no agent reading the inbox, no test may fail, and the report must say **inconclusive**, not passed: the agent never replied to the control email, so nothing can be concluded. If any test fails here, Indefessus raised a false alarm: please open an issue.
+With no agent reading the inbox, no test may fail, and the report must say **can't tell yet**, with every test marked *can't tell* (inconclusive), never *resisted*: the agent never replied to the control email, so nothing can be concluded. If any test fails here, Indefessus raised a false alarm: please open an issue.
 
 ## 6. Agent switched on
 
@@ -68,7 +68,7 @@ curl -s "imap://localhost:3143/INBOX" -u "office@lab.test:lab" -X "STORE 1:* +FL
 indefessus -c lab/indefessus.toml daily
 ```
 
-The report shows what the agent did with each test, and the "behaviour changed since the last run" section lists every test that got worse once the agent was switched on.
+The report opens with its verdict and shows what the agent did with each test. The control run from step 5 is never used for comparison, because the agent did not answer in it. From now on, each run is compared with the last run where the agent was working, and the "Changed since the last good run" section lists every test that got worse or better since then. If a run went wrong for another reason, leave it out of comparisons with `indefessus -c lab/indefessus.toml runs exclude <run>`.
 
 ## The control email
 

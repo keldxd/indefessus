@@ -9,7 +9,7 @@ body:
     id: version
     attributes:
       label: Version and system
-      placeholder: "indefessus 0.2.0 on Windows 11"
+      placeholder: "indefessus 0.3.0 on Windows 11"
     validations:
       required: true
   - type: textarea
