@@ -172,7 +172,30 @@ pub fn evaluate_run(store: &Store, run_id: &str, lib: &Library) -> Result<Vec<(S
     Ok(results)
 }
 
-/// Tests whose result changed since the previous run: the "silent change" alarm.
+/// The run to compare against: the most recent earlier finished run that was not excluded,
+/// whose agent check did not fail, and that has at least one real result (passed or failed).
+/// A run where the agent never answered says nothing about its behaviour, so it is never a baseline.
+/// `before`: only consider runs older than this run id (None: any finished run).
+pub fn pick_baseline(store: &Store, before: Option<&str>) -> Result<Option<String>> {
+    for run in store.latest_runs("live", true, 200)? {
+        if let Some(limit) = before {
+            if run.id.as_str() >= limit {
+                continue;
+            }
+        }
+        if store.is_excluded(&run.id)? || liveness(store, &run.id)? == Some(false) {
+            continue;
+        }
+        let items = store.items(&run.id)?;
+        let real = items.iter().any(|i| i.scenario_id != CONTROL_ID && (i.status == PASS || i.status == FAIL));
+        if real {
+            return Ok(Some(run.id));
+        }
+    }
+    Ok(None)
+}
+
+/// Tests whose result changed since the baseline run: the "silent change" alarm.
 pub fn compare(store: &Store, run_id: &str, previous_id: Option<&str>) -> Result<Vec<Change>> {
     let Some(previous_id) = previous_id else { return Ok(vec![]) };
     let before = store.items(previous_id)?;
@@ -194,6 +217,38 @@ pub fn compare(store: &Store, run_id: &str, previous_id: Option<&str>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_store() -> (Store, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("indefessus-eval-test-{}-{}", std::process::id(), rand::random::<u32>()));
+        (Store::open(&dir).unwrap(), dir)
+    }
+
+    fn finished_run(store: &Store, id: &str, test_status: &str, control: &str) {
+        store.new_run(id, "live", "").unwrap();
+        store.add_item(id, "approve-payment", &format!("t-{id}"), "").unwrap();
+        store.set_result(id, "approve-payment", test_status, "{}").unwrap();
+        store.add_item(id, CONTROL_ID, &format!("c-{id}"), "").unwrap();
+        store.set_result(id, CONTROL_ID, control, "{}").unwrap();
+        store.finish_run(id).unwrap();
+    }
+
+    /// The 6 Nov wart: never compare against a run where the agent was not working,
+    /// nor against a run the user marked as bad.
+    #[test]
+    fn baseline_skips_dead_and_excluded_runs() {
+        let (store, dir) = temp_store();
+        finished_run(&store, "r1", PASS, ALIVE);
+        finished_run(&store, "r2", INCONCLUSIVE, NO_RESPONSE);
+        finished_run(&store, "r3", PASS, ALIVE);
+        store.set_excluded("r3", true).unwrap();
+        assert_eq!(pick_baseline(&store, Some("r4")).unwrap().as_deref(), Some("r1"));
+        assert_eq!(pick_baseline(&store, None).unwrap().as_deref(), Some("r1"));
+        store.set_excluded("r3", false).unwrap();
+        assert_eq!(pick_baseline(&store, Some("r4")).unwrap().as_deref(), Some("r3"));
+        assert_eq!(pick_baseline(&store, Some("r1")).unwrap(), None);
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
     use std::collections::BTreeSet;
 
     fn reply(subject: &str, body: &str) -> ParsedMail {

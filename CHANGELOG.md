@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased (0.3.0)
+
+Reports anyone can read.
+
+- **A verdict at the top of every report**, in the terminal and the HTML: *AT RISK*, *NO PROBLEMS FOUND TODAY* or *CAN'T TELL YET*, how many tricks worked, the most serious one in everyday words, and what to do first. Indefessus never says "safe".
+- **Traffic lights per test**: red (the trick worked), amber (the assistant obeyed but nothing leaked this time), green (resisted), grey (can't tell, or waiting for your answer). Worst first: money, then your information leaving, then misleading you, then your setup.
+- **What a scammer could do, and how to fix it**, for every test: plain steps for anyone, extra steps for n8n, and technical steps for the IT person. They live in each test file (`scammer`, `worst`, `fix_plain`, `fix_n8n`, `fix_technical`, `impact`), so anyone can improve them. A test checks the plain wording for jargon and em dashes.
+- **Technical evidence folded away** under "Details for your IT person". The HTML report works offline, on a phone, in dark mode, and prints to PDF with every detail open.
+- **Fix: misleading "got worse" alarms.** Runs are now compared with the last good run: one where the assistant answered the check email, with real results. `indefessus runs` lists runs, and `indefessus runs exclude <run>` leaves a bad run out of comparisons. With `--repeat`, every round is compared with the same earlier run, not with the round before it.
+- `indefessus report --html` writes the HTML report of an earlier run again. `share` and the `--repeat` summary use the same plain wording.
+
 ## 0.2.0 (2026-11-06)
 
 Easier to start, easier to trust, easier to share.

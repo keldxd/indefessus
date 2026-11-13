@@ -8,7 +8,8 @@ use std::sync::Mutex;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
-    id TEXT PRIMARY KEY, started_at REAL, finished_at REAL, kind TEXT, label TEXT
+    id TEXT PRIMARY KEY, started_at REAL, finished_at REAL, kind TEXT, label TEXT,
+    excluded INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS items (
     run_id TEXT, scenario_id TEXT, token TEXT UNIQUE, seed_secret TEXT,
@@ -65,6 +66,16 @@ pub struct Store {
     pub dir: PathBuf,
 }
 
+/// Brings databases made by older versions up to date. Safe to run every time.
+fn migrate(conn: &Connection) -> Result<()> {
+    // v0.3.0: runs can be left out of comparisons (`indefessus runs exclude`)
+    let has_excluded = conn.prepare("SELECT 1 FROM pragma_table_info('runs') WHERE name='excluded'")?.exists([])?;
+    if !has_excluded {
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
+
 fn run_row(r: &rusqlite::Row) -> rusqlite::Result<Run> {
     Ok(Run { id: r.get(0)?, started_at: r.get(1)?, finished_at: r.get(2)?, kind: r.get(3)?, label: r.get(4)? })
 }
@@ -75,6 +86,7 @@ impl Store {
         let conn = Connection::open(dir.join("indefessus.db"))?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Store { conn: Mutex::new(conn), dir: dir.to_path_buf() })
     }
 
@@ -83,7 +95,7 @@ impl Store {
     }
 
     pub fn new_run(&self, id: &str, kind: &str, label: &str) -> Result<()> {
-        self.db().execute("INSERT INTO runs VALUES (?1,?2,NULL,?3,?4)", params![id, now(), kind, label])?;
+        self.db().execute("INSERT INTO runs (id, started_at, finished_at, kind, label) VALUES (?1,?2,NULL,?3,?4)", params![id, now(), kind, label])?;
         Ok(())
     }
 
@@ -101,13 +113,25 @@ impl Store {
 
     pub fn latest_runs(&self, kind: &str, finished_only: bool, limit: u32) -> Result<Vec<Run>> {
         let sql = format!(
-            "SELECT id, started_at, finished_at, kind, label FROM runs WHERE kind=?1 {} ORDER BY started_at DESC LIMIT ?2",
+            "SELECT id, started_at, finished_at, kind, label FROM runs WHERE kind=?1 {} ORDER BY started_at DESC, id DESC LIMIT ?2",
             if finished_only { "AND finished_at IS NOT NULL" } else { "" }
         );
         let db = self.db();
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map(params![kind, limit], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Leave a run out of (or put it back into) comparisons. False if there is no such run.
+    pub fn set_excluded(&self, id: &str, excluded: bool) -> Result<bool> {
+        let changed = self.db().execute("UPDATE runs SET excluded=?1 WHERE id=?2", params![excluded as i64, id])?;
+        Ok(changed > 0)
+    }
+
+    pub fn is_excluded(&self, id: &str) -> Result<bool> {
+        let value: Option<i64> =
+            self.db().query_row("SELECT excluded FROM runs WHERE id=?1", params![id], |r| r.get(0)).optional()?;
+        Ok(value.unwrap_or(0) != 0)
     }
 
     pub fn add_item(&self, run_id: &str, scenario_id: &str, token: &str, seed_secret: &str) -> Result<()> {
@@ -212,5 +236,47 @@ impl Store {
             .query_row("SELECT 1 FROM verified WHERE mailbox=?1", params![mailbox.to_lowercase()], |r| r.get(0))
             .optional()?;
         Ok(found.is_some())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store() -> (Store, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("indefessus-store-test-{}-{}", std::process::id(), rand::random::<u32>()));
+        (Store::open(&dir).unwrap(), dir)
+    }
+
+    #[test]
+    fn exclude_and_include_a_run() {
+        let (store, dir) = temp_store();
+        store.new_run("r1", "live", "").unwrap();
+        assert!(!store.is_excluded("r1").unwrap());
+        assert!(store.set_excluded("r1", true).unwrap());
+        assert!(store.is_excluded("r1").unwrap());
+        assert!(store.set_excluded("r1", false).unwrap());
+        assert!(!store.is_excluded("r1").unwrap());
+        assert!(!store.set_excluded("no-such-run", true).unwrap());
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_database_gets_the_new_column() {
+        let dir = std::env::temp_dir().join(format!("indefessus-migrate-test-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            // A runs table exactly as v0.2.0 created it
+            let conn = Connection::open(dir.join("indefessus.db")).unwrap();
+            conn.execute_batch("CREATE TABLE runs (id TEXT PRIMARY KEY, started_at REAL, finished_at REAL, kind TEXT, label TEXT);
+                                INSERT INTO runs VALUES ('old', 1.0, 2.0, 'live', '');").unwrap();
+        }
+        let store = Store::open(&dir).unwrap();
+        assert!(!store.is_excluded("old").unwrap());
+        store.new_run("new", "live", "").unwrap();
+        assert!(store.set_excluded("old", true).unwrap());
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

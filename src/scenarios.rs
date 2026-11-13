@@ -26,6 +26,21 @@ pub fn harm_text(harm: &str) -> &'static str {
     HARMS.iter().find(|(k, _)| *k == harm).map(|(_, v)| *v).unwrap_or("Unknown risk")
 }
 
+/// What a failure costs, worst first. Reports sort failures in this order.
+pub const IMPACTS: &[(&str, &str)] = &[
+    ("money", "Money"),
+    ("data", "Your information leaving"),
+    ("deceive", "Misleading you"),
+    ("setup", "Your setup exposed"),
+    ("other", "Other"),
+];
+
+pub const SEVERITIES: &[&str] = &["critical", "high", "medium", "low"];
+
+pub fn impact_text(impact: &str) -> &'static str {
+    IMPACTS.iter().find(|(k, _)| *k == impact).map(|(_, v)| *v).unwrap_or("Other")
+}
+
 const BUILTIN: &[(&str, &str)] = &[
     ("01-leak-link-plain.toml", include_str!("../scenarios/01-leak-link-plain.toml")),
     ("02-leak-link-hidden.toml", include_str!("../scenarios/02-leak-link-hidden.toml")),
@@ -52,8 +67,33 @@ pub struct Detect {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Explain {
+    /// What the failure means, in a few plain sentences
     pub fail: String,
+    /// Short fix, kept for older community tests that have no fix_plain
     pub fix: String,
+    /// One everyday sentence: what a scammer could do with this weakness
+    pub scammer: String,
+    /// Completes "The most serious: a stranger's email got it to ..."
+    pub worst: String,
+    /// Fix steps for anyone, most important first
+    pub fix_plain: Vec<String>,
+    /// Extra steps for agents built in n8n
+    pub fix_n8n: Vec<String>,
+    /// Steps for the IT person or developer
+    pub fix_technical: Vec<String>,
+}
+
+impl Explain {
+    /// The plain fix steps, falling back to the short fix of older tests.
+    pub fn plain_steps(&self) -> Vec<String> {
+        if !self.fix_plain.is_empty() {
+            self.fix_plain.iter().map(|x| x.trim().to_string()).collect()
+        } else if !self.fix.trim().is_empty() {
+            vec![self.fix.trim().to_string()]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -63,6 +103,7 @@ pub struct Scenario {
     pub id: String,
     pub title: String,
     pub harm: String,
+    pub impact: String,
     pub severity: String,
     pub mode: String,
     pub technique: String,
@@ -85,6 +126,12 @@ impl Scenario {
     pub fn is_guided(&self) -> bool {
         self.mode == "guided"
     }
+    /// Sort key, most dangerous first: what it costs, then how severe.
+    pub fn danger_rank(&self) -> (usize, usize) {
+        let impact = IMPACTS.iter().position(|(k, _)| *k == self.impact).unwrap_or(IMPACTS.len());
+        let severity = SEVERITIES.iter().position(|k| *k == self.severity).unwrap_or(SEVERITIES.len());
+        (impact, severity)
+    }
 }
 
 pub fn parse(text: &str, source: &str) -> Result<Scenario> {
@@ -100,6 +147,20 @@ pub fn parse(text: &str, source: &str) -> Result<Scenario> {
     }
     if sc.severity.is_empty() {
         sc.severity = "medium".into();
+    }
+    if sc.impact.is_empty() {
+        sc.impact = match sc.harm.as_str() {
+            "leak" | "reveal" => "data",
+            "vouch" => "deceive",
+            _ => "other",
+        }
+        .into();
+    }
+    if !IMPACTS.iter().any(|(k, _)| *k == sc.impact) {
+        bail!("{source}: impact must be one of money, data, deceive, setup, other");
+    }
+    if !SEVERITIES.contains(&sc.severity.as_str()) {
+        bail!("{source}: severity must be one of critical, high, medium, low");
     }
     if !HARMS.iter().any(|(k, _)| *k == sc.harm) {
         bail!("{source}: harm must be one of leak, act, reveal, vouch");
@@ -268,6 +329,56 @@ mod tests {
     fn plus_addressing() {
         assert_eq!(trap_address("trap@x.org", "ind1234abcd", true), "trap+ind1234abcd@x.org");
         assert_eq!(trap_address("trap@x.org", "ind1234abcd", false), "trap@x.org");
+    }
+
+    /// The plain parts of every built-in test must read well for someone who is not technical.
+    #[test]
+    fn plain_wording_for_everyone() {
+        let jargon = ["exfiltrat", "prompt injection", "canary", "payload", "token", "llm", "system prompt"];
+        for sc in &load_library(&[]).unwrap().list {
+            let e = &sc.explain;
+            assert!(!e.scammer.trim().is_empty(), "{}: add explain.scammer", sc.id);
+            assert!(!e.worst.trim().is_empty(), "{}: add explain.worst", sc.id);
+            // It follows "a stranger's email got it to ...", so it must not say "stranger" again
+            assert!(!e.worst.to_lowercase().contains("stranger"), "{}: explain.worst repeats 'stranger': {}", sc.id, e.worst);
+            assert!(!e.fix_plain.is_empty(), "{}: add explain.fix_plain", sc.id);
+            assert!(!e.fix_n8n.is_empty(), "{}: add explain.fix_n8n", sc.id);
+            assert!(!e.fix_technical.is_empty(), "{}: add explain.fix_technical", sc.id);
+            let mut plain = vec![sc.title.clone(), e.fail.clone(), e.scammer.clone(), e.worst.clone()];
+            plain.extend(e.fix_plain.iter().cloned());
+            for text in &plain {
+                let lower = text.to_lowercase();
+                for word in jargon {
+                    assert!(!lower.contains(word), "{}: plain text uses jargon '{}': {}", sc.id, word, text);
+                }
+            }
+            let mut all = plain.clone();
+            all.extend(e.fix_n8n.iter().cloned());
+            all.extend(e.fix_technical.iter().cloned());
+            for text in &all {
+                assert!(!text.contains('\u{2014}'), "{}: no em dashes please: {}", sc.id, text);
+            }
+        }
+    }
+
+    #[test]
+    fn danger_order_puts_money_first() {
+        let lib = load_library(&[]).unwrap();
+        let mut ids: Vec<&Scenario> = lib.list.iter().collect();
+        ids.sort_by_key(|s| s.danger_rank());
+        assert_eq!(ids[0].impact, "money");
+        assert_eq!(ids.last().unwrap().impact, "setup");
+    }
+
+    #[test]
+    fn older_tests_without_new_fields_still_load() {
+        let sc = parse(
+            "id='x'\ntitle='t'\nharm='vouch'\nmode='guided'\nsubject='s'\nbody_text='b'\nguided_prompt='p'\n[detect]\noutput_contains=['m']\n[explain]\nfix='Do this.'",
+            "x",
+        )
+        .unwrap();
+        assert_eq!(sc.impact, "deceive");
+        assert_eq!(sc.explain.plain_steps(), vec!["Do this.".to_string()]);
     }
 
     #[test]

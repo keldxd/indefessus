@@ -89,6 +89,9 @@ enum Cmd {
     Report {
         #[arg(long)]
         run: Option<String>,
+        /// Also write the HTML report again (for example after upgrading Indefessus)
+        #[arg(long)]
+        html: bool,
     },
     /// Automatic tests for a daily schedule; exit code 2 if behaviour got worse
     Daily {
@@ -99,6 +102,11 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         repeat: u32,
     },
+    /// List recent runs, or leave a bad run out of comparisons
+    Runs {
+        #[command(subcommand)]
+        action: Option<RunsCmd>,
+    },
     /// Print an anonymised summary of a run, to share publicly (no addresses or email content)
     Share {
         #[arg(long)]
@@ -107,6 +115,16 @@ enum Cmd {
         #[arg(long, default_value = "")]
         agent: String,
     },
+}
+
+#[derive(Subcommand)]
+enum RunsCmd {
+    /// List recent runs (the default)
+    List,
+    /// Leave a run out of day-to-day comparisons, for example one where the agent was broken
+    Exclude { run: String },
+    /// Put an excluded run back into comparisons
+    Include { run: String },
 }
 
 fn open(cfg: &Config) -> Result<(Store, Library)> {
@@ -231,8 +249,32 @@ fn preflight(cfg: &Config, base_url: &str) -> Result<()> {
     Ok(())
 }
 
-fn previous_finished(store: &Store, run_id: &str) -> Result<Option<String>> {
-    Ok(store.latest_runs("live", true, 20)?.into_iter().map(|r| r.id).find(|id| id.as_str() < run_id))
+/// One line per recent run, for `indefessus runs`.
+fn list_runs(store: &Store) -> Result<()> {
+    let runs = store.latest_runs("live", false, 30)?;
+    if runs.is_empty() {
+        println!("No runs yet. Start one with: indefessus run");
+        return Ok(());
+    }
+    println!("{:<22} {:<28} {:<14} {:<26} note", "run", "started", "agent check", "results");
+    for run in runs {
+        let items: Vec<_> = store.items(&run.id)?.into_iter().filter(|i| i.scenario_id != evaluate::CONTROL_ID).collect();
+        let count = |s: &str| items.iter().filter(|i| i.status == s).count();
+        let check = match evaluate::liveness(store, &run.id)? {
+            Some(true) => "replied",
+            Some(false) => "NO REPLY",
+            None => "-",
+        };
+        let results = if run.finished_at.is_none() {
+            "not checked yet".to_string()
+        } else {
+            format!("{} worked, {} resisted", count(evaluate::FAIL), count(evaluate::PASS))
+        };
+        let note = if store.is_excluded(&run.id)? { "left out of comparisons" } else { "" };
+        println!("{:<22} {:<28} {:<14} {:<26} {note}", run.id, clock::fmt_local(run.started_at), check, results);
+    }
+    println!("\nTo leave a bad run out of comparisons: indefessus runs exclude <run>");
+    Ok(())
 }
 
 fn imap_reader(cfg: &Config, usernames: Vec<String>) -> Result<ImapTrap> {
@@ -284,10 +326,12 @@ fn wait_for_agent(cfg: &Config, store: &Store, run_id: &str, max_minutes: u64) {
 }
 
 fn finish_check(cfg: &Config, store: &Store, lib: &Library, run_id: &str) -> Result<Vec<evaluate::Change>> {
-    finish_check_with(cfg, store, lib, run_id, true)
+    let baseline = evaluate::pick_baseline(store, Some(run_id))?;
+    finish_check_with(cfg, store, lib, run_id, baseline.as_deref(), true)
 }
 
-fn finish_check_with(cfg: &Config, store: &Store, lib: &Library, run_id: &str, print: bool) -> Result<Vec<evaluate::Change>> {
+/// `baseline`: the run to compare with (see evaluate::pick_baseline).
+fn finish_check_with(cfg: &Config, store: &Store, lib: &Library, run_id: &str, baseline: Option<&str>, print: bool) -> Result<Vec<evaluate::Change>> {
     let usernames = if cfg.trap.read_each_address {
         store
             .items(run_id)?
@@ -305,7 +349,7 @@ fn finish_check_with(cfg: &Config, store: &Store, lib: &Library, run_id: &str, p
         evaluate::apply_liveness(store, run_id, alive)?;
     }
     store.finish_run(run_id)?;
-    let changes = evaluate::compare(store, run_id, previous_finished(store, run_id)?.as_deref())?;
+    let changes = evaluate::compare(store, run_id, baseline)?;
     let dir = Path::new(&cfg.run.data_dir).join("reports");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{run_id}.html"));
@@ -322,12 +366,19 @@ fn finish_check_with(cfg: &Config, store: &Store, lib: &Library, run_id: &str, p
 /// Several rounds of the same tests, one after the other, then a combined summary.
 fn run_rounds(cfg: &Config, store: &Store, lib: &Library, only: &[String], auto_only: bool, rounds: u32, wait: u64) -> Result<Vec<evaluate::Change>> {
     let mut run_ids = Vec::new();
-    let mut all_changes = Vec::new();
+    let mut all_changes: Vec<evaluate::Change> = Vec::new();
+    // Every round is compared with the same earlier good run, never with the round before it:
+    // assistants are not consistent, so round-to-round differences are noise, not a change.
+    let baseline = evaluate::pick_baseline(store, None)?;
     for round in 1..=rounds {
         println!("\n== Round {round} of {rounds} ==");
         let run_id = start_run(cfg, store, lib, only, auto_only)?;
         wait_for_agent(cfg, store, &run_id, wait);
-        all_changes.extend(finish_check_with(cfg, store, lib, &run_id, rounds == 1)?);
+        for change in finish_check_with(cfg, store, lib, &run_id, baseline.as_deref(), rounds == 1)? {
+            if !all_changes.iter().any(|c| c.scenario == change.scenario && c.worse == change.worse) {
+                all_changes.push(change);
+            }
+        }
         run_ids.push(run_id);
     }
     if rounds > 1 {
@@ -445,15 +496,23 @@ fn real_main() -> Result<i32> {
             store.set_answer(&run_id, &scenario, &text)?;
             println!("Saved. Run `indefessus check` to update the results.");
         }
-        Cmd::Report { run } => {
+        Cmd::Report { run, html } => {
             let cfg = Config::load(&cli.config)?;
             let (store, lib) = open(&cfg)?;
             let run_id = match run {
                 Some(r) => r,
                 None => latest_live(&store)?,
             };
-            let changes = evaluate::compare(&store, &run_id, previous_finished(&store, &run_id)?.as_deref())?;
+            let baseline = evaluate::pick_baseline(&store, Some(run_id.as_str()))?;
+            let changes = evaluate::compare(&store, &run_id, baseline.as_deref())?;
             println!("{}", report::text_report(&store, &run_id, &lib, &changes)?);
+            if html {
+                let dir = Path::new(&cfg.run.data_dir).join("reports");
+                std::fs::create_dir_all(&dir)?;
+                let path = dir.join(format!("{run_id}.html"));
+                std::fs::write(&path, report::html_report(&store, &run_id, &lib, &changes)?)?;
+                println!("\nFull report: {}", path.display());
+            }
         }
         Cmd::Daily { wait, repeat } => {
             let cfg = Config::load(&cli.config)?;
@@ -461,6 +520,25 @@ fn real_main() -> Result<i32> {
             let changes = run_rounds(&cfg, &store, &lib, &[], true, repeat.max(1), wait.unwrap_or(cfg.run.wait_minutes))?;
             if changes.iter().any(|c| c.worse) {
                 return Ok(2);
+            }
+        }
+        Cmd::Runs { action } => {
+            let cfg = Config::load(&cli.config)?;
+            let (store, _) = open(&cfg)?;
+            match action.unwrap_or(RunsCmd::List) {
+                RunsCmd::List => list_runs(&store)?,
+                RunsCmd::Exclude { run } => {
+                    if !store.set_excluded(&run, true)? {
+                        bail!("There is no run {run}. See the list with: indefessus runs");
+                    }
+                    println!("Run {run} is now left out of comparisons. Undo with: indefessus runs include {run}");
+                }
+                RunsCmd::Include { run } => {
+                    if !store.set_excluded(&run, false)? {
+                        bail!("There is no run {run}. See the list with: indefessus runs");
+                    }
+                    println!("Run {run} is back in comparisons.");
+                }
             }
         }
         Cmd::Share { run, agent } => {
