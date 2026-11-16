@@ -1,5 +1,9 @@
 # Indefessus
 
+[![test](https://github.com/keldxd/indefessus/actions/workflows/test.yml/badge.svg)](https://github.com/keldxd/indefessus/actions/workflows/test.yml)
+[![latest release](https://img.shields.io/github/v/release/keldxd/indefessus)](https://github.com/keldxd/indefessus/releases/latest)
+[![license: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+
 **Check whether the AI agent connected to your inbox can be turned against you, then re-check it every day for silent changes.**
 
 *Indefessus* is Latin for "tireless". Never tired, never silent.
@@ -26,9 +30,10 @@ What works and is tested today:
 - The test library (20 tests, 8 of them hidden inside attached files), the tracker listener, evidence collection, the plain-language report, and the day-to-day comparison.
 - A single program with no installs: the tests are built into it.
 - A **self-test** that runs the whole pipeline against stand-in agents, with no mailbox needed: a naive one that obeys any instruction (all 20 tests catch it), a careful one that never does (none fire), a switched-off one (never reported as passing), and one that answers email but never opens attachments (its file tests are never reported as passing). The stand-ins are simple scripts, not AI models, and say nothing about any real product.
+- **Built for the internet it faces**: the tracker listener puts a time and size limit on every request and records only links Indefessus sent, the trap mailbox is read with limits, and text from strangers is cleaned before it reaches a report. These were tested by attacking Indefessus itself in the lab (see [16 November](lab/RESULTS.md)).
 - **Guided setup** (`setup`), a **setup checker** (`doctor`), a **free automatic tunnel** (`listen --tunnel`), **repeated runs** (`--repeat`) and **anonymised sharing** (`share`).
 
-**First live results** ([full write-up](lab/RESULTS.md)): in the reproducible [test lab](lab/), a typical "take care of my inbox" n8n agent running Groq's `gpt-oss-120b` **failed 6 of 8 tests**. Strangers' emails made it confirm a KES 245,000 payment approval, send out its own instructions and tool list, open links it was told to open, and write to addresses it was told to write to. Indefessus caught every one from the outside, with no false alarms, and every result was cross-checked against the agent's own log. These runs used the email tests of v0.1.1 and v0.2.0; the attachment tests are new in v0.3.0 and have not been run in the lab yet.
+**First live results** ([full write-up](lab/RESULTS.md)): in the reproducible [test lab](lab/), a typical "take care of my inbox" n8n agent running Groq's `gpt-oss-120b` **failed 6 of 8 tests**. Strangers' emails made it confirm a KES 245,000 payment approval, send out its own instructions and tool list, open links it was told to open, and write to addresses it was told to write to. Indefessus caught every one from the outside, with no false alarms, and every result was cross-checked against the agent's own log. A re-run on 16 November with the same agent saw it approve the payment again, and showed one miss: the agent miscopied a test link by one letter, so Indefessus reported a trick that worked as resisted. That is fixed in v0.3.1. The attachment tests were sent too, but this lab agent cannot read files, so they could not be judged yet.
 
 ## Step 1: the self-test (2 minutes, nothing to set up)
 

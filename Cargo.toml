@@ -1,6 +1,6 @@
 [package]
 name = "indefessus"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Check whether the AI agent connected to your inbox can be turned against you, then re-check it every day for silent changes."
@@ -19,7 +19,7 @@ lettre = "0.11"
 native-tls = "0.2"
 rand = "0.8"
 regex = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
