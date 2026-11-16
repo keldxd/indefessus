@@ -183,11 +183,15 @@ Each test is a small, readable file in [`scenarios/`](scenarios/). Adding one is
 
 ## Roadmap
 
-- First public results on common setups (an n8n Gmail agent, and email assistants)
-- A larger test library, contributed and reviewed in the open
-- A free community instance, so organisations without IT staff do not need to run anything
-- A public, anonymised log of behaviour changes across AI products over time
-- Agents beyond email: shared drives, calendars, chat tools
+Plans, not features yet. In rough order:
+
+- **Tripwires.** Harmless decoy tools (approve payment, export contacts, share credentials) offered to the agent through MCP. If a hidden instruction makes the agent call one, that is recorded outside the agent: proof it took the action, not just opened a link. Left in place, the decoys work as an alarm.
+- **More platforms.** Tested setups and guides for agents built on Gmail, Zapier, Make and others, not only n8n.
+- **Approval tests.** Can a stranger's message get the agent to skip or fake its human approval step?
+- **Delayed tricks.** Instructions planted in one message that only act later, including through an agent's memory.
+- **Replies to the sender.** Count data the agent sends back to the stranger's own address, not only to the trap address (the lab saw this on 5 and 16 November).
+- **A public results log.** The same tests run across platforms and models, re-run when models update, published as open data.
+- A larger test library, contributed and reviewed in the open, and a free community instance for organisations without IT staff.
 
 ## License
 
