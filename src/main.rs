@@ -7,6 +7,7 @@ mod clock;
 mod config;
 mod doctor;
 mod evaluate;
+mod http;
 mod mail;
 mod net;
 mod rawmail;
@@ -485,6 +486,12 @@ fn real_main() -> Result<i32> {
                 }
                 address
             } else {
+                if cfg.canary.listen_host.trim() == "127.0.0.1" && cfg.canary.base_url.trim() != tunnel::AUTO {
+                    println!(
+                        "Note: listen_host is 127.0.0.1, so only this computer can reach the listener. If {} forwards here from another machine, set listen_host = \"0.0.0.0\".",
+                        cfg.canary.base_url
+                    );
+                }
                 cfg.canary.base_url.clone()
             };
             println!(

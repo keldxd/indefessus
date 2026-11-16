@@ -34,7 +34,9 @@ password_env = "INDEFESSUS_TRAP_PASSWORD"
 # A public address that reaches `indefessus listen`.
 # "auto" uses the free tunnel started by `indefessus listen --tunnel` (needs cloudflared).
 base_url = "auto"
-listen_host = "0.0.0.0"
+# Who can reach the listener. 127.0.0.1 (this computer only) is enough for the tunnel.
+# Use "0.0.0.0" only if your own public address forwards to this computer from another machine.
+listen_host = "127.0.0.1"
 listen_port = 8787
 
 [run]
@@ -63,7 +65,7 @@ fn d_data() -> String {
     ".indefessus".into()
 }
 fn d_host() -> String {
-    "0.0.0.0".into()
+    "127.0.0.1".into()
 }
 fn d_display() -> String {
     "Partner Office".into()

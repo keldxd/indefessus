@@ -50,7 +50,10 @@ pub struct Item {
 #[derive(Debug, Clone)]
 pub struct Hit {
     pub at: f64,
+    /// The path as visited; it differs from /c/<token> when the agent miscopied the link
+    pub path: String,
     pub query: String,
+    pub user_agent: String,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +173,19 @@ impl Store {
         Ok(())
     }
 
+    /// Records a visit to a test's link, but only for a token this tool sent and only while that
+    /// token has fewer than `cap` visits. One statement under one lock, so visits arriving at the
+    /// same moment cannot go over the cap. Returns whether the visit was recorded.
+    pub fn add_hit_capped(&self, token: &str, path: &str, query: &str, user_agent: &str, cap: i64) -> Result<bool> {
+        let added = self.db().execute(
+            "INSERT INTO hits (token, at, path, query, user_agent) SELECT ?1, ?2, ?3, ?4, ?5 \
+             WHERE EXISTS (SELECT 1 FROM items WHERE token = ?1) AND (SELECT COUNT(*) FROM hits WHERE token = ?1) < ?6",
+            params![token, now(), path, query, user_agent, cap],
+        )?;
+        Ok(added == 1)
+    }
+
+    #[cfg(test)]
     pub fn add_hit(&self, token: &str, path: &str, query: &str, user_agent: &str) -> Result<()> {
         self.db().execute("INSERT INTO hits VALUES (?1,?2,?3,?4,?5)", params![token, now(), path, query, user_agent])?;
         Ok(())
@@ -177,13 +193,44 @@ impl Store {
 
     pub fn hits(&self, token: &str) -> Result<Vec<Hit>> {
         let db = self.db();
-        let mut stmt = db.prepare("SELECT at, query FROM hits WHERE token=?1 ORDER BY at")?;
+        let mut stmt = db.prepare("SELECT at, path, query, user_agent FROM hits WHERE token=?1 ORDER BY at")?;
         let rows = stmt
-            .query_map(params![token], |r| Ok(Hit { at: r.get(0)?, query: r.get::<_, Option<String>>(1)?.unwrap_or_default() }))?
+            .query_map(params![token], |r| {
+                Ok(Hit {
+                    at: r.get(0)?,
+                    path: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    query: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    user_agent: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                })
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
+    /// Whether a token belongs to a test this tool sent.
+    pub fn token_known(&self, token: &str) -> Result<bool> {
+        let db = self.db();
+        let known = db.prepare("SELECT 1 FROM items WHERE token=?1")?.exists(params![token])?;
+        Ok(known)
+    }
+
+    /// Tokens of the tests in runs started since `since` (seconds since 1970).
+    pub fn recent_tokens(&self, since: f64) -> Result<Vec<String>> {
+        let db = self.db();
+        let mut stmt = db.prepare("SELECT i.token FROM items i JOIN runs r ON r.id = i.run_id WHERE r.started_at >= ?1 AND i.token IS NOT NULL")?;
+        let tokens = stmt.query_map(params![since], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(tokens)
+    }
+
+    #[cfg(test)]
+    pub fn hit_count(&self, token: &str) -> Result<i64> {
+        let db = self.db();
+        let n: i64 = db.query_row("SELECT COUNT(*) FROM hits WHERE token=?1", params![token], |r| r.get(0))?;
+        Ok(n)
+    }
+
+    // One row of the trapmail table, column by column; a struct would only rename the columns.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_trapmail(&self, run_id: &str, token: &str, sender: &str, subject: &str, body: &str, message_id: &str, sent_at: Option<f64>) -> Result<()> {
         let db = self.db();
         let exists: Option<i64> = db

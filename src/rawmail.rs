@@ -13,11 +13,24 @@ pub struct ParsedMail {
     pub tokens: BTreeSet<String>,
     /// Tokens found only in the address and subject headers
     pub header_tokens: BTreeSet<String>,
-    /// When the mail was sent, from its Date header (seconds since 1970, UTC)
+    /// When the mail says it was sent, from its Date header (seconds since 1970, UTC).
+    /// The sender writes this line, so it is not used for timing when `received` is known.
     pub date: Option<f64>,
+    /// When the trap mailbox's own server received the mail (IMAP INTERNALDATE), if known
+    pub received: Option<f64>,
+}
+
+impl ParsedMail {
+    /// The best time for this mail: the server's receive time, else the sender's Date line.
+    pub fn time(&self) -> Option<f64> {
+        self.received.or(self.date)
+    }
 }
 
 /// Parses an RFC 2822 date such as "Thu, 5 Nov 2026 10:29:27 +0300" into seconds since 1970 (UTC).
+///
+/// The header comes from mail anyone can send to the trap address, so anything unexpected
+/// (odd characters, impossible numbers) gives `None` instead of a crash or an overflow.
 pub fn parse_date(value: &str) -> Option<f64> {
     const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
     let value = value.split('(').next()?.trim();
@@ -29,14 +42,22 @@ pub fn parse_date(value: &str) -> Option<f64> {
     if parts.len() < 4 {
         return None;
     }
-    let day: i64 = parts[0].parse().ok()?;
+    let day: i64 = parts[0].parse().ok().filter(|d| (1..=31).contains(d))?;
     let month = MONTHS.iter().position(|m| parts[1].to_ascii_lowercase().starts_with(m))? as i64 + 1;
     let mut year: i64 = parts[2].parse().ok()?;
-    if year < 100 {
+    if (0..100).contains(&year) {
         year += if year < 50 { 2000 } else { 1900 };
     }
-    let hms: Vec<i64> = parts[3].split(':').map(|x| x.parse().unwrap_or(0)).collect();
-    let (h, mi, s) = (hms.first().copied()?, hms.get(1).copied().unwrap_or(0), hms.get(2).copied().unwrap_or(0));
+    if !(1900..=9999).contains(&year) {
+        return None;
+    }
+    let mut hms = parts[3].split(':').map(|x| x.parse::<i64>().ok());
+    let h = hms.next().flatten().filter(|h| (0..24).contains(h))?;
+    let mi = hms.next().flatten().unwrap_or(0);
+    let s = hms.next().flatten().unwrap_or(0);
+    if !(0..60).contains(&mi) || !(0..=60).contains(&s) {
+        return None;
+    }
     let offset = parts.get(4).map(|z| zone_offset(z)).unwrap_or(0);
     // days from civil (Howard Hinnant)
     let y = if month <= 2 { year - 1 } else { year };
@@ -49,15 +70,25 @@ pub fn parse_date(value: &str) -> Option<f64> {
     Some((days * 86_400 + h * 3600 + mi * 60 + s - offset) as f64)
 }
 
+/// "+0300" or "-0530" in seconds. Named zones ("UT", "GMT", "Z") and anything malformed count as UTC.
 fn zone_offset(zone: &str) -> i64 {
     let z = zone.trim();
-    if (z.starts_with('+') || z.starts_with('-')) && z.len() >= 5 {
-        let sign = if z.starts_with('-') { -1 } else { 1 };
-        let hh: i64 = z[1..3].parse().unwrap_or(0);
-        let mm: i64 = z[3..5].parse().unwrap_or(0);
-        return sign * (hh * 3600 + mm * 60);
+    let sign = match z.as_bytes().first() {
+        Some(b'+') => 1,
+        Some(b'-') => -1,
+        _ => return 0,
+    };
+    // Byte-safe: only four ASCII digits are accepted, so slicing can never split a character
+    let digits = &z.as_bytes()[1..];
+    if digits.len() < 4 || !digits[..4].iter().all(u8::is_ascii_digit) {
+        return 0;
     }
-    0 // "UT", "GMT", "Z" and unknown names are treated as UTC
+    let num = |a: u8, b: u8| i64::from(a - b'0') * 10 + i64::from(b - b'0');
+    let (hh, mm) = (num(digits[0], digits[1]), num(digits[2], digits[3]));
+    if hh > 23 || mm > 59 {
+        return 0;
+    }
+    sign * (hh * 3600 + mm * 60)
 }
 
 /// Finds every test token ("ind" followed by 8 lowercase hex characters) in a text.
@@ -124,6 +155,7 @@ pub fn parse_raw(raw: &[u8]) -> ParsedMail {
         tokens,
         header_tokens,
         date,
+        received: None,
     }
 }
 
@@ -161,6 +193,36 @@ mod tests {
         assert_eq!(parse_date("not a date"), None);
         let raw = b"From: a@b\r\nTo: trap+ind0000beef@t\r\nDate: Thu, 5 Nov 2026 10:29:27 +0000\r\nSubject: s\r\n\r\nbody";
         assert_eq!(parse_raw(raw).date, Some(1_793_874_567.0));
+    }
+
+    #[test]
+    fn crafted_dates_never_crash() {
+        // Non-ASCII inside the zone used to panic on a byte slice (one email could stop `check`)
+        for v in [
+            "Thu, 5 Nov 2026 10:29:27 +0\u{e9}00",
+            "Thu, 5 Nov 2026 10:29:27 +\u{1F600}0",
+            "Thu, 5 Nov 2026 10:29:27 -\u{20ac}",
+            "Thu, 5 Nov 2026 10:29:27 +",
+            "Thu, 5 Nov 2026 10:29:27 +99x9",
+        ] {
+            assert_eq!(parse_date(v), Some(1_793_874_567.0), "{v}");
+        }
+        // Empty, impossible or oversized values are rejected instead of overflowing
+        for v in [
+            "",
+            "   ",
+            &"9".repeat(100_000),
+            "Thu, 5 Nov 99999999999999 10:29:27 +0000",
+            "Thu, 99999999999999 Nov 2026 10:29:27 +0000",
+            "Thu, 5 Nov 2026 99999999999999:00:00 +0000",
+            "Thu, 5 Nov 2026 10:99:00 +0000",
+            "Thu, 0 Nov 2026 10:00:00 +0000",
+            "Thu, 5 Nov -5 10:00:00 +0000",
+        ] {
+            assert_eq!(parse_date(v), None, "{}", v.chars().take(60).collect::<String>());
+        }
+        let raw = "From: a@b\r\nTo: trap+ind0000beef@t\r\nDate: Thu, 5 Nov 2026 10:29:27 +\u{e9}\u{e9}\r\nSubject: s\r\n\r\nbody";
+        assert!(parse_raw(raw.as_bytes()).tokens.contains("ind0000beef"));
     }
 
     #[test]

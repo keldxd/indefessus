@@ -135,7 +135,7 @@ password_env = "INDEFESSUS_TRAP_PASSWORD"
 
 [canary]
 base_url = "{base_url}"   # "auto" uses the address from `indefessus listen --tunnel`
-listen_host = "0.0.0.0"
+listen_host = "{listen_host}"   # 127.0.0.1: only this computer; 0.0.0.0: any network it is on
 listen_port = 8787
 
 [run]
@@ -153,6 +153,8 @@ liveness = true
         imap_host = mail.imap_host,
         imap_port = mail.imap_port,
         base_url = base_url,
+        // The tunnel connects from this computer, so nothing else needs to reach the listener
+        listen_host = if base_url == "auto" { "127.0.0.1" } else { "0.0.0.0" },
     );
     std::fs::write(config_path, config)?;
     let cfg_flag = if config_path == Path::new("indefessus.toml") { String::new() } else { format!(" -c {}", config_path.display()) };

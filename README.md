@@ -47,6 +47,8 @@ The program is not signed yet, so your computer may warn you the first time:
 - **Windows** may show "Windows protected your PC". Click *More info*, then *Run anyway*.
 - **macOS** may say the developer cannot be verified. Run `xattr -d com.apple.quarantine indefessus-macos-*` once in the same folder, then try again.
 
+From 0.3.1, each download has a matching `.sha256` file on the Releases page. To check that the file you got is the one GitHub built, download both into the same folder and run `sha256sum -c indefessus-linux-x86_64.sha256` (macOS: `shasum -a 256 -c indefessus-macos-arm64.sha256`; Windows PowerShell: `Get-FileHash indefessus-windows-x86_64.exe` and compare with the number in the `.sha256` file). This shows the file was not changed on the way to you; it is not a signature.
+
 To make the commands below shorter, rename the file to `indefessus` (`indefessus.exe` on Windows).
 
 **Or build it** with [Rust](https://rustup.rs):
@@ -169,6 +171,9 @@ Each test is a small, readable file in [`scenarios/`](scenarios/). Adding one is
 - **Some actions are invisible from outside.** If an agent acts in a way that never touches a link or an address you control, Indefessus cannot see it.
 - **Guided tests need a person** to ask the assistant and paste its answer.
 - **File tests need an agent that reads attachments**, and the attachment check needs it to reply by email. Some workflow tools cannot read every file type (for example, n8n's built-in Extract From File node does not read Word documents), so those tests come out as *can't tell*.
+- **Link scanners can look like the agent.** Email security filters and link previews often open every link in a message by themselves. Indefessus ignores visits from the ones that say who they are (Microsoft Safe Links, Google, Proofpoint, Mimecast and others) unless the link came back with data added, but a scanner that pretends to be an ordinary browser cannot be told apart.
+- **A badly miscopied link is missed.** Agents sometimes copy a link with a mistake. Indefessus still counts a link that is one character off from a test's link, but not one with more mistakes than that.
+- **A flood can still slow the tracker link down.** The listener gives each visit 10 seconds to arrive and handles 16 at a time, so a few slow or broken connections cannot hide the agent's visit. Hundreds of them at once could still delay or drop visits while they last.
 - **The agent check needs the agent to reply to email.** An assistant that never sends email (one you only chat with) cannot confirm it is alive this way; use the guided tests for it.
 
 ## Roadmap

@@ -10,7 +10,9 @@ use lettre::message::header::{ContentType, Header, HeaderName, HeaderValue};
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Mutex;
+use std::time::Duration;
 
 #[derive(Clone)]
 struct XIndefessusTest(String);
@@ -144,18 +146,58 @@ pub struct ImapTrap {
     pub tls: bool,
 }
 
+/// Anyone can send mail to the trap address, so reading it is bounded: messages over this size
+/// are skipped (their size is asked for first, so they are never downloaded),
+const MAX_MESSAGE_BYTES: u32 = 10 * 1024 * 1024;
+/// at most this many of the newest messages are read per check,
+const MAX_MESSAGES: usize = 1000;
+/// and a server that stops answering is given up on instead of waited for forever.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const READ_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The newest `max` message numbers, oldest first, and how many older ones were left out.
+fn newest(mut ids: Vec<u32>, max: usize) -> (Vec<u32>, usize) {
+    ids.sort_unstable();
+    let skipped = ids.len().saturating_sub(max);
+    (ids.split_off(skipped), skipped)
+}
+
+/// The messages small enough to read, and how many were too big (or gave no size).
+fn small_enough(sizes: &[(u32, Option<u32>)], max_bytes: u32) -> (Vec<u32>, usize) {
+    let keep: Vec<u32> = sizes.iter().filter(|(_, size)| matches!(size, Some(s) if *s <= max_bytes)).map(|(id, _)| *id).collect();
+    let too_big = sizes.len() - keep.len();
+    (keep, too_big)
+}
+
+fn id_set(ids: &[u32]) -> String {
+    ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",")
+}
+
 fn fetch_with<T: std::io::Read + std::io::Write>(client: imap::Client<T>, trap: &ImapTrap, username: &str, since_ts: f64) -> Result<Vec<ParsedMail>> {
     let mut session = client.login(username, &trap.password).map_err(|e| anyhow!("trap mailbox login failed for {username}: {}", e.0))?;
     session.examine(&trap.folder)?;
     // One day of margin, because IMAP dates have no time of day
     let ids = session.search(format!("SINCE {}", imap_date(since_ts - 86_400.0)))?;
+    let (ids, too_many) = newest(ids.into_iter().collect(), MAX_MESSAGES);
     let mut found = Vec::new();
     if !ids.is_empty() {
-        let set = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let messages = session.fetch(set, "RFC822")?;
-        for m in messages.iter() {
-            if let Some(body) = m.body() {
-                found.push(parse_raw(body));
+        let sizes: Vec<(u32, Option<u32>)> = session.fetch(id_set(&ids), "RFC822.SIZE")?.iter().map(|f| (f.message, f.size)).collect();
+        let (wanted, too_big) = small_enough(&sizes, MAX_MESSAGE_BYTES);
+        if too_many > 0 || too_big > 0 {
+            eprintln!(
+                "Note: in the trap mailbox {username}, skipped {too_many} older message(s) beyond the newest {MAX_MESSAGES} and {too_big} message(s) over {} MB.",
+                MAX_MESSAGE_BYTES / (1024 * 1024)
+            );
+        }
+        if !wanted.is_empty() {
+            let messages = session.fetch(id_set(&wanted), "(RFC822 INTERNALDATE)")?;
+            for m in messages.iter() {
+                if let Some(body) = m.body() {
+                    let mut mail = parse_raw(body);
+                    // The time the trap mailbox's server received it; the Date line is the sender's word
+                    mail.received = m.internal_date().map(|d| d.timestamp() as f64);
+                    found.push(mail);
+                }
             }
         }
     }
@@ -163,18 +205,39 @@ fn fetch_with<T: std::io::Read + std::io::Write>(client: imap::Client<T>, trap: 
     Ok(found)
 }
 
+/// Connects with a time limit, then puts one on every read and write.
+fn connect_tcp(host: &str, port: u16) -> Result<TcpStream> {
+    let mut last = None;
+    for addr in (host, port).to_socket_addrs().with_context(|| format!("cannot find {host}"))? {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(READ_WRITE_TIMEOUT))?;
+                stream.set_write_timeout(Some(READ_WRITE_TIMEOUT))?;
+                return Ok(stream);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(match last {
+        Some(e) => anyhow::Error::from(e),
+        None => anyhow!("cannot find {host}"),
+    })
+}
+
 impl ImapTrap {
     fn fetch_one(&self, username: &str, since_ts: f64) -> Result<Vec<ParsedMail>> {
         let target = format!("{}:{}", self.host, self.port);
+        let stream = connect_tcp(&self.host, self.port).with_context(|| format!("cannot connect to {target}"))?;
         if self.tls {
             let tls = native_tls::TlsConnector::builder().build()?;
-            let client = imap::connect((self.host.as_str(), self.port), &self.host, &tls).with_context(|| format!("cannot connect to {target}"))?;
+            let stream = tls.connect(&self.host, stream).map_err(|e| anyhow!("secure connection to {target} failed: {e}"))?;
+            let mut client = imap::Client::new(stream);
+            client.read_greeting().with_context(|| format!("no greeting from {target}"))?;
             fetch_with(client, self, username, since_ts)
         } else {
             // Plain connection: only for a local test lab
-            let stream = std::net::TcpStream::connect((self.host.as_str(), self.port)).with_context(|| format!("cannot connect to {target}"))?;
             let mut client = imap::Client::new(stream);
-            client.read_greeting()?;
+            client.read_greeting().with_context(|| format!("no greeting from {target}"))?;
             fetch_with(client, self, username, since_ts)
         }
     }
@@ -209,5 +272,23 @@ impl MemoryTrap {
 impl TrapSource for MemoryTrap {
     fn fetch_since(&self, _since_ts: f64) -> Result<Vec<ParsedMail>> {
         Ok(self.messages.lock().map(|m| m.clone()).unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_newest_messages_are_read() {
+        assert_eq!(newest(vec![5, 1, 4, 2, 3], 3), (vec![3, 4, 5], 2));
+        assert_eq!(newest(vec![2, 1], 10), (vec![1, 2], 0));
+        assert_eq!(newest(Vec::new(), 10), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn huge_messages_are_never_downloaded() {
+        let sizes = [(1, Some(500)), (2, Some(MAX_MESSAGE_BYTES)), (3, Some(MAX_MESSAGE_BYTES + 1)), (4, None)];
+        assert_eq!(small_enough(&sizes, MAX_MESSAGE_BYTES), (vec![1, 2], 2));
     }
 }

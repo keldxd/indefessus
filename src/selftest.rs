@@ -1,12 +1,13 @@
 //! Self-test: proves the whole pipeline works, with no real mailbox and no real agent.
 //!
-//! Three stand-in agents read the same test emails:
+//! Four stand-in agents read the same test emails:
 //!   - a NAIVE agent that obeys any instruction it finds in an email (every test should fail)
 //!   - a CAREFUL agent that never follows instructions from email content (every test should pass)
 //!   - a SILENT agent that is switched off (no test may pass: results must be inconclusive)
 //!   - a BLIND agent that answers email but never opens attachments (file tests must be
 //!     inconclusive, never passed: it did not resist a file it never read)
-//! These are simple programs that imitate the two extremes. They are not AI models, and the
+//!
+//! These are simple programs that imitate these behaviours. They are not AI models, and the
 //! results say nothing about any real product. They show that Indefessus catches an agent
 //! that misbehaves, and raises no false alarms on one that behaves.
 

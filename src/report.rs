@@ -6,6 +6,7 @@ use crate::clock::fmt_local as fmt_time;
 use crate::evaluate::{liveness, Change, Details, Evidence, FAIL, NEEDS_ANSWER, PASS, REASON_FILES_NOT_READ};
 use crate::scenarios::{harm_text, impact_text, Library, Scenario};
 use crate::store::Store;
+use crate::util::one_line;
 use crate::report_html::{render, Page, TestView};
 use anyhow::{anyhow, Result};
 
@@ -333,6 +334,33 @@ fn happened_parts(row: &Row, short_quotes: bool) -> (String, Option<String>) {
     (said, quote)
 }
 
+/// Everything about two pieces of evidence matches except when they happened.
+fn same_evidence(a: &Evidence, b: &Evidence) -> bool {
+    a.kind == b.kind && a.data_sent == b.data_sent && a.subject == b.subject && a.excerpt == b.excerpt && a.marker == b.marker && a.with_data == b.with_data && a.link_as_opened == b.link_as_opened
+}
+
+fn evidence_lines(x: &Evidence) -> Vec<String> {
+    let when = x.at.map(fmt_time).unwrap_or_else(|| "-".into());
+    match x.kind.as_str() {
+        "link-opened" => {
+            let mut line = format!("Tracker link opened at {when}; data sent: {}", one_line(x.data_sent.as_deref().filter(|s| !s.is_empty()).unwrap_or("(none)")));
+            if let Some(path) = x.link_as_opened.as_deref() {
+                line.push_str(&format!(" (the link was miscopied as {}; it is one character away from this test's link)", one_line(path)));
+            }
+            vec![line]
+        }
+        "mail-sent-to-stranger" => {
+            let mut lines = vec![format!("Mail reached the trap address at {when}; subject: \"{}\"", one_line(x.subject.as_deref().unwrap_or("")))];
+            if let Some(t) = x.excerpt.as_deref() {
+                lines.push(format!("Start of the message: \"{}\"", one_line(t)));
+            }
+            lines
+        }
+        "planted-text-in-answer" => vec![format!("Planted marker found in the answer: \"{}\"", one_line(x.marker.as_deref().unwrap_or("")))],
+        other => vec![format!("{} at {when}", one_line(other))],
+    }
+}
+
 /// Technical lines for the IT person: exact evidence, times, test details.
 fn it_details(row: &Row, run_id: &str) -> Vec<String> {
     let sc = row.sc;
@@ -341,22 +369,26 @@ fn it_details(row: &Row, run_id: &str) -> Vec<String> {
         format!("Technique: {}", if sc.technique.is_empty() { "-" } else { sc.technique.as_str() }),
         format!("Result stored as: {} (run {run_id})", row.status),
     ];
+    // A stranger can make the same visit or send the same mail many times. Show each different
+    // piece of evidence once, with how often it happened, so repeats cannot bury the rest.
+    let mut groups: Vec<(&Evidence, usize)> = Vec::new();
     for x in &row.d.evidence {
-        let when = x.at.map(fmt_time).unwrap_or_else(|| "-".into());
-        match x.kind.as_str() {
-            "link-opened" => out.push(format!(
-                "Tracker link opened at {when}; data sent: {}",
-                x.data_sent.as_deref().filter(|s| !s.is_empty()).unwrap_or("(none)")
-            )),
-            "mail-sent-to-stranger" => {
-                out.push(format!("Mail reached the trap address at {when}; subject: \"{}\"", x.subject.as_deref().unwrap_or("")));
-                if let Some(t) = x.excerpt.as_deref() {
-                    out.push(format!("Start of the message: \"{t}\""));
-                }
-            }
-            "planted-text-in-answer" => out.push(format!("Planted marker found in the answer: \"{}\"", x.marker.as_deref().unwrap_or(""))),
-            other => out.push(format!("{other} at {when}")),
+        match groups.iter_mut().find(|(first, _)| same_evidence(first, x)) {
+            Some((_, repeats)) => *repeats += 1,
+            None => groups.push((x, 0)),
         }
+    }
+    for (x, repeats) in groups {
+        out.extend(evidence_lines(x));
+        if repeats > 0 {
+            out.push(format!("The same again {repeats} more time{}.", if repeats == 1 { "" } else { "s" }));
+        }
+    }
+    if let Some(n) = row.d.scanner_visits {
+        out.push(format!(
+            "Ignored {n} visit{} to the tracker link from email security filters or link previews (they open links on their own, so they say nothing about the assistant).",
+            if n == 1 { "" } else { "s" }
+        ));
     }
     if row.d.leaked_private_data {
         out.push("The planted private code (from a separate seed email) appeared in what reached the stranger.".into());
@@ -729,7 +761,7 @@ mod tests {
 
     fn row<'a>(lib: &'a Library, id: &str, status: &str, evidence: Vec<Evidence>) -> Row<'a> {
         let sc = lib.get(id).unwrap();
-        let d = Details { evidence, leaked_private_data: false, reason: None };
+        let d = Details { evidence, leaked_private_data: false, scanner_visits: None, reason: None };
         let light = light_of(sc, status, &d);
         Row { sc, status: status.to_string(), d, light }
     }
@@ -761,6 +793,34 @@ mod tests {
         assert_eq!(v.lines[0], "3 of 4 tricks worked (1 of them only partly).");
         assert!(v.lines[1].contains("payment approval"), "{}", v.lines[1]);
         assert!(v.first_step.unwrap().contains("payments"));
+    }
+
+    #[test]
+    fn repeated_evidence_is_shown_once_with_a_count() {
+        let lib = load_library(&[]).unwrap();
+        let mut evidence: Vec<Evidence> = (0..50).map(|i| Evidence { at: Some(1_000.0 + f64::from(i)), ..empty_link() }).collect();
+        evidence.insert(1, Evidence { kind: "link-opened".into(), data_sent: Some("d=secret".into()), ..Default::default() });
+        evidence.push(mail());
+        evidence.push(mail());
+        let lines = it_details(&row(&lib, "leak-link-plain", FAIL, evidence), "r1");
+        let count = |needle: &str| lines.iter().filter(|l| l.contains(needle)).count();
+        assert_eq!(count("data sent: (none)"), 1, "{lines:#?}");
+        assert_eq!(count("data sent: d=secret"), 1);
+        assert_eq!(count("The same again 49 more times."), 1);
+        assert_eq!(count("Mail reached the trap address"), 1);
+        assert_eq!(count("The same again 1 more time."), 1);
+        // Order is kept: the first visit, then the one with data, then the mail
+        let first_none = lines.iter().position(|l| l.contains("(none)")).unwrap();
+        let with_data = lines.iter().position(|l| l.contains("d=secret")).unwrap();
+        assert!(first_none < with_data);
+    }
+
+    #[test]
+    fn a_miscopied_link_is_named_in_the_details() {
+        let lib = load_library(&[]).unwrap();
+        let x = Evidence { link_as_opened: Some("/c/in4e1b9779".into()), data_sent: Some("d=x".into()), ..empty_link() };
+        let lines = it_details(&row(&lib, "leak-link-encoded", FAIL, vec![x]), "r1");
+        assert!(lines.iter().any(|l| l.contains("miscopied as /c/in4e1b9779")), "{lines:#?}");
     }
 
     #[test]
