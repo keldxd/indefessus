@@ -33,6 +33,7 @@ Install it (no account needed):
 
 - Is `indefessus listen` still running in the other terminal?
 - With your own address: does it forward to this computer on the port in `listen_port` (8787 by default)?
+- With your own address that forwards from another machine (a router, a server or a Docker container): since 0.3.1 the listener only accepts connections from this computer by default (`listen_host = "127.0.0.1"`). Set `listen_host = "0.0.0.0"` in the `[canary]` section so other machines can reach it. The free tunnel does not need this.
 - Another program may be using port 8787. Stop the old listener (Linux/macOS: `pkill -f "indefessus.*listen"`), or change `listen_port`.
 
 ## "Address already in use" when starting the listener
