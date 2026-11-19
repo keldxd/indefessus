@@ -1,4 +1,9 @@
-# Indefessus
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/branding/logo-horizontal-paper.svg">
+    <img src="assets/branding/logo-horizontal-ink.svg" alt="Indefessus" height="56">
+  </picture>
+</h1>
 
 [![test](https://github.com/keldxd/indefessus/actions/workflows/test.yml/badge.svg)](https://github.com/keldxd/indefessus/actions/workflows/test.yml)
 [![latest release](https://img.shields.io/github/v/release/keldxd/indefessus)](https://github.com/keldxd/indefessus/releases/latest)

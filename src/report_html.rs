@@ -58,6 +58,17 @@ pub struct Page {
     pub help: String,
 }
 
+/// The approved logo (small-size cut, for use below 48 px), read from the one copy in
+/// assets/branding at compile time so the report never fetches anything. It is fixed artwork,
+/// never built from report data. currentColor makes it follow the ink in light, dark and print.
+const LOGO: &str = include_str!("../assets/branding/logo-horizontal-small-current.svg");
+
+/// The logo as inline HTML: the SVG namespace is implied inside HTML, so it is dropped (the report
+/// carries no URLs at all), and a class is added for sizing. The artwork itself is unchanged.
+fn logo() -> String {
+    LOGO.trim().replacen(" xmlns=\"http://www.w3.org/2000/svg\"", "", 1).replacen("<svg ", "<svg class=\"logo\" ", 1)
+}
+
 fn e(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
@@ -260,26 +271,26 @@ pub fn render(p: &Page) -> String {
 <meta name="color-scheme" content="light dark">
 <title>Indefessus report {run}</title>
 <style>
-:root{{--paper:#ffffff;--ink:#1b1f24;--muted:#5b6470;--rule:#d8dce2;--faint:#f4f5f7;--navy:#1d3c6e;
---red:#b42318;--amber:#9a5205;--amber-mark:#dc6803;--green:#08703f;--grey:#5d6675;
---serif:Charter,"Bitstream Charter","Sitka Text",Cambria,Georgia,serif;
---sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+:root{{--paper:#f3f2ee;--ink:#121313;--muted:#5e6163;--rule:#d6d4cc;--faint:#ecebe5;
+--oxide:#a8361f;--graphite:#5e6163;
+--serif:"Bitter","Roboto Slab",Rockwell,Charter,"Bitstream Charter","Sitka Text",Cambria,Georgia,serif;
+--sans:"DM Sans",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
 --mono:ui-monospace,"Cascadia Mono",Consolas,"Liberation Mono",Menlo,monospace}}
-@media screen and (prefers-color-scheme:dark){{:root{{--paper:#17191d;--ink:#e6e8eb;--muted:#a3abb7;--rule:#363c45;--faint:#20242a;--navy:#a8c0ea;
---red:#f97066;--amber:#fdb022;--amber-mark:#f79009;--green:#5fd39b;--grey:#9aa3b2}}}}
+@media screen and (prefers-color-scheme:dark){{:root{{--paper:#121313;--ink:#f3f2ee;--muted:#9a9d9f;--rule:#34383a;--faint:#1b1d1e;
+--oxide:#e2734f;--graphite:#9a9d9f}}}}
 @page{{size:A4;margin:18mm 17mm 20mm;
-@bottom-left{{content:"Indefessus report, {run}";font:8pt system-ui,sans-serif;color:#5b6470}}
-@bottom-right{{content:"Page " counter(page) " of " counter(pages);font:8pt system-ui,sans-serif;color:#5b6470}}}}
+@bottom-left{{content:"Indefessus report, {run}";font:8pt system-ui,sans-serif;color:#5e6163}}
+@bottom-right{{content:"Page " counter(page) " of " counter(pages);font:8pt system-ui,sans-serif;color:#5e6163}}}}
 *{{box-sizing:border-box}}
 html{{background:var(--paper)}}
-body{{margin:0 auto;max-width:56rem;padding:2.2rem 2rem 3rem;color:var(--ink);background:var(--paper);font:1.0625rem/1.6 var(--serif);-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+body{{margin:0 auto;max-width:56rem;padding:2.2rem 2rem 3rem;color:var(--ink);background:var(--paper);font:1.0625rem/1.6 var(--sans);-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 a{{color:inherit;text-decoration-color:var(--rule);text-underline-offset:.15em}}
-a:focus-visible,summary:focus-visible{{outline:3px solid var(--navy);outline-offset:2px}}
+a:focus-visible,summary:focus-visible{{outline:3px solid var(--ink);outline-offset:2px}}
 code,.tid{{font-family:var(--mono);font-size:.82em}}
 
 /* masthead */
-.mast{{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;flex-wrap:wrap;border-bottom:3px solid var(--ink);padding-bottom:.5rem}}
-.brand{{font:700 1.15rem/1 var(--sans);letter-spacing:-.01em}}
+.mast{{display:flex;justify-content:space-between;align-items:flex-end;gap:1rem;flex-wrap:wrap;border-bottom:3px solid var(--ink);padding-bottom:.5rem}}
+.brand{{display:block;color:var(--ink);line-height:0}} .brand .logo{{display:block;height:30px;width:auto}}
 .doc{{font:1rem/1.2 var(--sans);color:var(--muted)}}
 .runinfo{{display:grid;grid-template-columns:repeat(4,auto);justify-content:start;gap:.15rem 2.2rem;margin:.7rem 0 0;font:.85rem/1.45 var(--sans)}}
 .runinfo dt{{color:var(--muted)}} .runinfo dd{{margin:0;font-weight:600}}
@@ -288,16 +299,16 @@ code,.tid{{font-family:var(--mono);font-size:.82em}}
 .verdict{{display:grid;grid-template-columns:minmax(0,1fr) 20rem;gap:2.5rem;align-items:start;margin:2.4rem 0 1.6rem}}
 .lead{{font:1rem/1.2 var(--sans);color:var(--muted);margin:0 0 .3rem}}
 .verdict h1{{font:700 3.6rem/1 var(--serif);letter-spacing:-.02em;margin:0 0 1rem}}
-.risk h1{{color:var(--red)}} .ok h1{{color:var(--green)}} .unknown h1{{color:var(--grey)}}
+.risk h1{{color:var(--oxide)}} .ok h1{{color:var(--ink)}} .unknown h1{{color:var(--graphite)}}
 .count{{font-size:1.3rem;line-height:1.4;margin:0 0 .6rem}}
 .verdict p{{margin:0 0 .5rem}}
 .agent{{font:.88rem/1.5 var(--sans);color:var(--muted);margin-top:.9rem!important}}
 .chart{{margin:.4rem 0 0;padding-top:.8rem;border-top:1px solid var(--rule)}}
 .chart svg{{width:100%;height:auto;display:block;overflow:visible}}
 .chart .cl{{font:13px var(--sans);fill:var(--ink)}} .chart .cv{{font:600 13px var(--sans);fill:var(--ink)}}
-.chart .bar{{fill:none;stroke:var(--muted);stroke-width:1.2}} .chart .bar.key{{fill:var(--red);stroke:none}}
-.m-red{{fill:var(--red)}} .m-amber{{fill:var(--amber-mark)}} .m-amber-o{{fill:none;stroke:var(--amber-mark);stroke-width:2}}
-.m-green{{fill:none;stroke:var(--green);stroke-width:2}} .m-grey{{fill:none;stroke:var(--grey);stroke-width:2;stroke-dasharray:3 2}}
+.chart .bar{{fill:none;stroke:var(--muted);stroke-width:1.2}} .chart .bar.key{{fill:var(--oxide);stroke:none}}
+.m-red{{fill:var(--oxide)}} .m-amber{{fill:var(--oxide)}} .m-amber-o{{fill:none;stroke:var(--oxide);stroke-width:2}}
+.m-green{{fill:none;stroke:var(--ink);stroke-width:2}} .m-grey{{fill:none;stroke:var(--graphite);stroke-width:2;stroke-dasharray:3 2}}
 .chart figcaption{{font:.8rem/1.45 var(--sans);color:var(--muted);margin-top:.5rem}}
 
 /* side-head rows: one grid for the whole document */
@@ -306,8 +317,8 @@ code,.tid{{font-family:var(--mono);font-size:.82em}}
 .sbody>:first-child{{margin-top:0}} .sbody>:last-child{{margin-bottom:0}}
 .sbody p{{margin:0 0 .5rem}}
 .first{{border-top:2px solid var(--ink);border-bottom:1px solid var(--rule);padding:.5rem 0;margin:0 0 2.2rem}}
-.first h4{{color:var(--navy)}} .first p{{font-size:1.3rem;line-height:1.45}}
-.changed{{border-left:4px solid var(--amber-mark);padding-left:.9rem;margin:0 0 2rem}}
+.first h4{{color:var(--ink)}} .first p{{font-size:1.3rem;line-height:1.45}}
+.changed{{border-left:4px solid var(--ink);padding-left:.9rem;margin:0 0 2rem}}
 .changed ul{{margin:0 0 .4rem;padding-left:1.1rem}}
 .note{{font:.85rem/1.5 var(--sans);color:var(--muted)}}
 
@@ -324,30 +335,30 @@ td{{border-bottom:1px solid var(--rule);padding:.5rem .6rem .5rem 0;vertical-ali
 td.num{{font-weight:600}}
 .register a{{text-decoration:none}} .register a:hover{{text-decoration:underline}}
 td.outcome{{white-space:nowrap;font-weight:600}} td.risk{{color:var(--muted);white-space:nowrap}}
-tr.red td.outcome{{color:var(--red)}} tr.amber td.outcome{{color:var(--amber)}} tr.green td.outcome{{color:var(--green)}} tr.grey td.outcome{{color:var(--grey)}}
+tr.red td.outcome{{color:var(--oxide)}} tr.amber td.outcome{{color:var(--oxide)}} tr.green td.outcome{{color:var(--ink)}} tr.grey td.outcome{{color:var(--graphite)}}
 .plain .tid{{display:block;color:var(--muted)}} td.tech{{color:var(--muted)}}
 
 /* the mark */
 .mark{{display:inline-block;width:.8rem;height:.8rem;margin-right:.45rem;vertical-align:-.05rem;flex:none}}
-.mark.red{{background:var(--red)}}
-.mark.amber{{border:2px solid var(--amber-mark);background:linear-gradient(135deg,var(--amber-mark) 50%,transparent 50%)}}
-.mark.green{{border:2px solid var(--green)}}
-.mark.grey{{border:2px dashed var(--grey)}}
+.mark.red{{background:var(--oxide)}}
+.mark.amber{{border:2px solid var(--oxide);background:linear-gradient(135deg,var(--oxide) 50%,transparent 50%)}}
+.mark.green{{border:2px solid var(--ink)}}
+.mark.grey{{border:2px dashed var(--graphite)}}
 
 /* findings */
 .finding{{padding:1.4rem 0 .6rem;border-bottom:1px solid var(--rule)}}
 .fhead{{display:grid;grid-template-columns:10rem minmax(0,1fr);gap:1.6rem;margin-bottom:.4rem}}
 .fnum{{font:700 2.4rem/1 var(--serif);color:var(--rule);text-align:left}}
-.finding.red .fnum{{color:var(--red)}} .finding.amber .fnum{{color:var(--amber-mark)}}
+.finding.red .fnum{{color:var(--oxide)}} .finding.amber .fnum{{color:var(--oxide)}}
 .fhead h3{{font:700 1.3rem/1.3 var(--serif);margin:.15rem 0 .35rem}}
 .facts{{display:flex;flex-wrap:wrap;gap:.2rem 1.4rem;font:.85rem/1.4 var(--sans);color:var(--muted);margin:0}}
-.facts .outcome{{font-weight:700}} .outcome.red{{color:var(--red)}} .outcome.amber{{color:var(--amber)}} .outcome.grey{{color:var(--grey)}} .outcome.green{{color:var(--green)}}
+.facts .outcome{{font-weight:700}} .outcome.red{{color:var(--oxide)}} .outcome.amber{{color:var(--oxide)}} .outcome.grey{{color:var(--graphite)}} .outcome.green{{color:var(--ink)}}
 blockquote{{margin:.2rem 0 .7rem;padding:.1rem 0 .1rem 1rem;border-left:3px solid var(--rule);font:.95rem/1.55 var(--sans);color:var(--ink)}}
-blockquote.red{{border-left-color:var(--red)}} blockquote.amber{{border-left-color:var(--amber-mark)}}
+blockquote.red{{border-left-color:var(--oxide)}} blockquote.amber{{border-left-color:var(--oxide)}}
 blockquote p{{margin:0}}
 ol,ul{{margin:0 0 .5rem;padding-left:1.25rem}} li{{margin:.2rem 0}} ol li::marker{{font:600 .9em var(--sans);color:var(--muted)}}
 details{{margin:.3rem 0 0}}
-summary{{font:600 .88rem/1.5 var(--sans);color:var(--navy);cursor:pointer;width:fit-content}}
+summary{{font:600 .88rem/1.5 var(--sans);color:var(--ink);cursor:pointer;width:fit-content}}
 details[open]>summary{{margin-bottom:.35rem}}
 details.it{{font:.85rem/1.5 var(--sans);color:var(--muted)}} details.it li{{overflow-wrap:anywhere}} details.it ul{{margin-bottom:.3rem}}
 .sub{{font-weight:600;color:var(--ink);margin:.4rem 0 .1rem!important}}
@@ -368,7 +379,8 @@ body{{padding:1.2rem 1rem 2rem}}
 .register .risk{{display:none}}
 }}
 @media print{{
-body{{max-width:none;padding:0;font-size:10.5pt}}
+:root{{--paper:#ffffff}}
+body{{max-width:none;padding:0;font-size:10.5pt}} .brand .logo{{height:8mm}}
 .finding{{padding:.9rem 0 .3rem}} .side{{padding:.35rem 0}} h2{{margin-top:1.8rem}} .about{{margin-top:1.8rem}}
 .verdict{{margin:1.6rem 0 1.2rem}} .first{{margin-bottom:1.4rem}}
 .verdict h1{{font-size:34pt}}
@@ -381,7 +393,7 @@ p,li{{orphans:3;widows:3}}
 a{{text-decoration:none}}
 }}
 </style></head><body>
-<header class="mast"><span class="brand">Indefessus</span><span class="doc">Email assistant security check</span></header>
+<header class="mast"><span class="brand">{logo}</span><span class="doc">Email assistant security check</span></header>
 <dl class="runinfo">
 <div><dt>Run</dt><dd><code>{run}</code></dd></div>
 <div><dt>Started</dt><dd>{started}</dd></div>
@@ -415,6 +427,7 @@ window.addEventListener("beforeprint", function () {{ document.querySelectorAll(
 </script>
 </body></html>
 "#,
+        logo = logo(),
         run = e(&p.run_id),
         started = e(&p.started),
         agent_short = e(&p.agent_short),
@@ -491,6 +504,19 @@ mod tests {
         assert!(html.contains("Title of a &amp; &lt;more&gt;") && !html.contains("<more>"));
         assert!(!html.contains("http://") && !html.contains("src=\"http") && !html.contains("<link"));
         assert!(!html.contains('\u{2014}'));
+    }
+
+    #[test]
+    fn report_carries_the_logo_inline_and_stays_offline() {
+        let html = render(&page(vec![t("a", "red", "Trick worked"), t("b", "amber", "Partly worked"), t("c", "grey", "Can't tell"), t("d", "green", "Resisted")]));
+        // the approved logo is drawn inline, with its accessible name, and nothing is fetched
+        assert!(html.contains("<svg class=\"logo\""), "inline logo missing");
+        assert!(html.contains("<title id=\"t\">Indefessus</title>"), "logo has no accessible name");
+        for banned in ["xmlns=\"http", "<img", "url(", "@import", "@font-face", "<link", "<iframe", "<object", "<embed", "src="] {
+            assert!(!html.contains(banned), "external or embedded resource: {banned}");
+        }
+        // no new script: only the existing one that opens folded sections for printing
+        assert_eq!(html.matches("<script").count(), 1);
     }
 
     #[test]

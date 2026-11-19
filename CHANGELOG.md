@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+A new look. What is tested, how it is scored and what the reports say do not change.
+
+- **The HTML report carries the Indefessus logo and colours.** The logo is drawn inside the report, so it still works offline and fetches nothing. Results that mean the assistant obeyed a stranger (trick worked, partly worked) are marked in oxide; resisted is now ink instead of green, and can't tell is grey. The shapes beside each result are the same as before, so the report still reads in black-and-white print.
+- **The README opens with the logo**, in a light and a dark version that follow GitHub's theme.
+- **Logo files live in `assets/branding`**, with a note on which file to use where.
+
 ## 0.3.1 (2026-11-16)
 
 Security and evidence fixes, found in a review of 0.3.0 and in the lab. How tests are sent does not change. How they are scored changes in three places, all below: link scanners, reply timing and miscopied links.
