@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 (2026-11-19)
 
-A new look. What is tested, how it is scored and what the reports say do not change.
+A security update to the email library, and a new look. What is tested, how it is scored and what the reports say do not change.
+
+- **Email library updated (RUSTSEC-2026-0560 to RUSTSEC-2026-0565).** Six advisories were published on 17 November against lettre 0.11.23, the library Indefessus uses to send test email: a man in the middle could forge replies during STARTTLS, a bare line break could inject SMTP commands, mail to an address with a quoted local part could go to a different address, a hostile mail server could exhaust memory, and two odd replies could crash it. Indefessus only talks to your own mail server and its test text contains none of those characters, so the risk was low, but lettre is now 0.11.24, which fixes all six. The v0.3.1 downloads carry the old version; use these instead.
 
 - **The HTML report carries the Indefessus logo and colours.** The logo is drawn inside the report, so it still works offline and fetches nothing. Results that mean the assistant obeyed a stranger (trick worked, partly worked) are marked in oxide; resisted is now ink instead of green, and can't tell is grey. The shapes beside each result are the same as before, so the report still reads in black-and-white print.
 - **The README opens with the logo**, in a light and a dark version that follow GitHub's theme.
